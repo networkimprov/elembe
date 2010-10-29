@@ -1,0 +1,45 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<title>Suae Prototype</title>
+
+<link rel="icon" type="image/jpeg" href="logo1_v2.jpg"/>
+
+<link rel="stylesheet" type="text/css" href="suae.css"/>
+<link rel="stylesheet" type="text/css" href="util.css"/>
+
+<script type="text/javascript" src="date.format.js"></script>
+<script type="text/javascript" src="socket-io.js"></script>
+
+<script type="text/javascript" src="main.js"></script>
+<script type="text/javascript" src="util.js"></script>
+
+<base target="suae_external"/>
+
+</head>
+
+<body onload="suae.start()">
+
+<!--prevent whitespace in empty elements -->
+
+<div id="menupane">
+  <div class="menuname" style="right:19em">Tls      <div class="menu" id="suaemenu.tools"></div></div>
+  <div class="menuname" style="right:16em">Lyt      <div class="menu" id="suaemenu.layout"></div></div>
+  <div class="menuname" style="right:13em">Pgs      <div class="menu" id="suaemenu.page"></div></div>
+  <div class="menuname" style="right:10em">Circ     <div class="menu" id="suaemenu.circ"></div></div>
+  <div class="menuname" style="right: 7em">Proj     <div class="menu" id="suaemenu.proj"></div></div>
+  <div class="menuname" style="right: 4em">Help     <div class="menu" id="suaemenu.help"></div></div>
+  <div class="menuname" style="right: 0; padding-right:1em;"
+                                       ><i>suae</i> <div class="menu" id="suaemenu.suae" style="right:0;"></div></div>
+</div>
+
+<div id="palettes"></div>
+
+<div id="navpane"><div id="suaemenu.nav"></div></div>
+
+<div id="screenpane"><div style="text-align:center; margin-top:2em; font-size:200%">
+  suae is a Mozilla Prism app.<br/>This demo only works in Firefox.
+</div></div>
+
+
+</body></html>

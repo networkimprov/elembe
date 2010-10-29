@@ -1,0 +1,128 @@
+<html><head>
+<title>Storage Test</title>
+
+<script src="socket-io.js"></script>
+</head><body>
+
+<h3>Socket.io test</h3>
+<style type="text/css">#content div { padding:5px 0; }</style>
+<div>Count <span id="count">0</span> || Error <span id="error">0</span></div>
+<div id="content"></div>
+
+<script type="text/javascript">
+  function print(iData) {
+    document.getElementById("content").appendChild(document.createElement('div')).innerHTML = iData;
+  }
+  var sCookie = document.cookie.slice(document.cookie.indexOf('anvlclient=')+11, 36+11);
+  print(sCookie);
+  var aCount=0, aError=0;
+  var aStart, aEnd, aEnd2;
+  io.setPath("/socket.io/");
+  socket = new io.Socket(location.hostname, {port:location.port});
+  socket.connect();
+  aStart = new Date;
+  socket.send(test({id:0}));
+  socket.on("message", function(data) {
+    aEnd = new Date;
+    document.getElementById('count').innerHTML = ++aCount;
+    print(data);
+    try {
+    var aRes = JSON.parse(data);
+    } catch (err) {
+      document.getElementById('error').innerHTML = ++aError;
+      print('JSON parse failed, length '+data.length);
+    }
+    aEnd2 = new Date;
+    print('round trip '+(aEnd-aStart)+' parse '+(aEnd2-aStart));
+    if (/\+$/.test(aRes.id))
+      return;
+    ++aRes.id;
+    var aReq = test(aRes);
+    if (aReq) {
+      aStart = new Date;
+      socket.send(aReq);
+    } else
+      print('=== Done ===');
+  });
+
+function test(iRes) {
+  var aReq;
+
+  switch (iRes.id) {
+  case 0:
+    aReq = {type:'getClientNav'};
+    break;
+  case 1:
+    sNav = iRes;
+    aReq = {type:'getList'};
+    break;
+  case 2:
+    aReq = {type:'setClientNav', data:sNav.data};
+    break;
+  case 3:
+    aReq = {type:'newProject'};
+    break;
+  case 4:
+    sProj = iRes.list[0];
+    aReq = {project:sProj.oid, type:'postMsg', msg:'hello'};
+    break;
+  case 5:
+    aReq = {project:sProj.oid, type:'getMsgList'};
+    break;
+  case 6:
+    aReq = {project:sProj.oid, type:'setClientState', data:{"select":{}, "page":{}}};
+    break;
+  case 7:
+    aReq = {project:sProj.oid, type:'addMember', uid:'id', name:'liam'};
+    break;
+  case 8:
+    aReq = {project:sProj.oid, type:'subscribe'};
+    break;
+  case 9:
+    aReq = {project:sProj.oid, type:'write', data:{"name":"Renamed", "created":"2010-08-10T12:12:12Z"}};
+    break;
+  case 10:
+    aReq = {project:sProj.oid, type:'newPage'};
+    break;
+  case 11:
+    sPage = iRes.list[0];
+    aReq = {project:sProj.oid, type:'subscribePage', page:sPage.oid};
+    break;
+  case 12:
+    aReq = {project:sProj.oid, type:'newPart'};
+    break;
+  case 13:
+    sPart = iRes;
+    aReq = {project:sProj.oid, type:'writePage', page:sPage.oid, data:{data:{}, layout:[{oid:sPart.a}]}};
+    break;
+  case 14:
+    aReq = {project:sProj.oid, type:'writePart', page:sPage.oid, part:sPart.a, data:'partdata\n'};
+    break;
+  case 15:
+    aReq = {project:sProj.oid, type:'commitRevision'};
+    break;
+  case 16:
+    sRev1 = iRes.list[0];
+    aReq = {project:sProj.oid, type:'writePart', page:sPage.oid, part:sPart.a, data:'one\npartdata\ntwo\n'};
+    break;
+  case 17:
+    aReq = {project:sProj.oid, type:'commitRevision'};
+    break;
+  case 18:
+    sRev2 = iRes.list[0];
+    aReq = {project:sProj.oid, type:'readPageRevision', page:sPage.oid, revision:sRev1.oid};
+    break;
+  case 19:
+    aReq = {project:sProj.oid, type:'readPageRevision', page:sPage.oid, revision:sRev2.oid};
+    break;
+  default:
+    return null;
+  }
+  aReq.id = iRes.id;
+  aReq.client = sCookie;
+  print(JSON.stringify(aReq));
+  return JSON.stringify(aReq);
+}
+</script>
+</body></html>
+

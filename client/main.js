@@ -1,0 +1,1284 @@
+
+
+
+var suae = {
+  pMgr: null,
+  pgEdit: null,
+  paletteMgr: null,
+  menus: null,
+
+  apps: { },
+  pendingParts: { },
+
+  scrollbar: null,
+  dragHandler: null,
+
+  socket: null,
+  requestId: 0,
+  requestTimer: null,
+  requestCount: 0,
+  requestPending: { },
+  clientId: document.cookie.slice(document.cookie.indexOf('anvlclient=')+11, 36+11),
+
+  touched: {},
+  touchTimer: null,
+
+  log: '',
+
+  hrefOid: function(iHref) { return iHref.slice(iHref.indexOf(':')+1); } ,
+
+  registerApp: function(iApp) {
+    if (!iApp.kAppName)
+      throw 'registerApp(): invalid app name';
+    if (this.apps[iApp.kAppName])
+      throw 'registerApp(): '+iApp.kAppName+' already registered';
+
+    try {
+    iApp.init();
+    } catch (aEr) {
+      throw iApp.kAppName +'.init(): '+ aEr;
+    }
+
+    this.apps[iApp.kAppName] = iApp;
+
+    var aPg, aPt;
+    for (aPg in this.pendingParts)
+      for (aPt in this.pendingParts[aPg])
+        if (this.pendingParts[aPg][aPt] === iApp.kAppName) {
+          suae.pMgr.placePartById(aPg, aPt);
+          delete this.pendingParts[aPg][aPt];
+        }
+  } ,
+
+  lookupApp: function(iName) {
+    return this.apps[iName] ? this.apps[iName] : null;
+  } ,
+
+  loadAppForPart: function(iName, iPgOid, iPtOid) {
+    if (this.apps[iName])
+      throw 'loadAppForPart(): App '+iName+' already loaded';
+
+    if (!this.pendingParts[iPgOid])
+      this.pendingParts[iPgOid] = { };
+    this.pendingParts[iPgOid][iPtOid] = iName;
+
+    if (document.getElementById('suaeapp.'+iName))
+      return;
+    var aEl = document.createElement('script');
+    aEl.id = 'suaeapp.'+iName;
+    aEl.type = 'text/javascript';
+    aEl.src = iName+'.js';
+    document.getElementsByTagName('head')[0].appendChild(aEl);
+  } ,
+
+  touch: function(iJso, iData) {
+    var aId;
+    switch (iJso.type) {
+    case 'setClientNav':
+      aId = '#clientNav';
+      break;
+    case 'setClientState':
+      aId = iJso.project+'.state';
+      break;
+    case 'write':
+      aId = iJso.project;
+      break;
+    case 'writePage':
+      aId = iJso.page;
+      break;
+    case 'writePart':
+      if (typeof iData !== 'string')
+        throw 'touch(): Part object requires data parameter';
+      suae.pMgr.pj[iJso.project].part[iJso.part].data = iJso.data = iData;
+      aId = iJso.part;
+      break;
+    default:
+      throw 'touch(): Input is not a writeable object';
+    }
+    if (!this.touched[aId])
+      this.touched[aId] = iJso;
+    if (!this.touchTimer)
+      this.touchTimer = setTimeout(this._saveTouched, 30000, null);
+  } ,
+
+  touchFlush: function(iCallback) {
+    if (this.touchTimer) {
+      clearTimeout(this.touchTimer);
+      this._saveTouched(iCallback);
+    } else if (iCallback)
+      iCallback();
+  } ,
+
+  _saveTouched: function(iCallback) {
+    suae.touchTimer = null;
+    var aCount = 0;
+    var aDone = function(jso) {
+      if (--aCount === 0 && iCallback)
+        iCallback();
+      if (jso.status !== 'ok')
+        throw 'saveTouchCall(): unexpected response to write request';
+    };
+    for (var a in suae.touched) {
+      if (!suae.touched[a])
+        continue;
+      ++aCount;
+      suae.request(suae.touched[a], aDone);
+      suae.touched[a] = null;
+    }
+  } ,
+
+  indexAdd: function(iIndex, iId, iJso) {
+    if (!iIndex.textsource)
+      throw 'indexAdd(): input is not an index';
+    for (var aI=0; aI < iIndex.i.length; ++aI) {
+      var aNum = iIndex.i[aI].type === 'num';
+      var aUp = iIndex.i[aI].order === '+';
+      var aKey = iJso[iIndex.i[aI].source];
+      aKey = aNum ? +aKey : aKey.toLocaleLowerCase();
+      for (var aO=0; aO < iIndex.i[aI].o.length; ++aO) {
+        var aNextKey = iIndex.i[aI].o[aO].key;
+        if (aNum)
+          aNextKey = +aNextKey;
+        if (aUp ? aKey < aNextKey : aKey >= aNextKey)
+          break;
+      }
+      //. eventually do a binary search
+      var aX = {id:iId, key:aKey, text:iJso[iIndex.textsource]};
+      if (aO < iIndex.i[aI].o.length)
+        iIndex.i[aI].o.splice(aO, 0, aX);
+      else
+        iIndex.i[aI].o.push(aX);
+    }
+  } ,
+
+  indexDelete: function(iIndex, iId) {
+    if (!iIndex.textsource)
+      throw 'indexDelete(): input is not an index';
+    for (var aI=0; aI < iIndex.i.length; ++aI)
+      for (var aO=0; aO < iIndex.i[aI].o.length; ++aO)
+        if (iIndex.i[aI].o[aO].id === iId)
+           iIndex.i[aI].o.splice(aO--, 1);
+  } ,
+
+  indexFind: function(iIndex, iId) {
+    if (!iIndex.textsource)
+      throw 'indexFind(): input is not an index';
+    for (var aO=0; aO < iIndex.i[0].o.length && iIndex.i[0].o[aO].id !== iId; ++aO) {}
+    return aO < iIndex.i[0].o.length ? {pos:aO, text:iIndex.i[0].o[aO].text} : null;
+  } ,
+
+  areEqual: function(iA, iB) {
+    if (iA.constructor !== iB.constructor)
+      return false;
+    var aMemberCount = 0;
+    for (var a in iA) {
+      if (!iA.hasOwnProperty(a))
+        continue;
+      if (typeof iA[a] === 'object' && typeof iB[a] === 'object' ? !areEqual(iA[a], iB[a]) : iA[a] !== iB[a])
+        return false;
+      ++aMemberCount;
+    }
+    for (var a in iB)
+      if (iB.hasOwnProperty(a))
+        --aMemberCount;
+    return aMemberCount ? false : true;
+  } ,
+
+  request: function(iJso, iCallback) {
+    iJso.id = ++this.requestId;
+    this.requestPending[this.requestId] = iCallback;
+    this.socket.send(JSON.stringify(iJso));
+    if (this.requestTimer)
+      clearTimeout(this.requestTimer);
+    this.requestTimer = setTimeout(this._onTimeout, 6000);
+    ++this.requestCount;
+  } ,
+
+  _onMessage: function(iMsg) {
+    try {
+    var aJso = JSON.parse(iMsg);
+    } catch (err) {
+      return;
+    }
+    if (aJso.error)
+      throw aJso.error;
+    if (aJso.type === 'update')
+      suae.pMgr.update(aJso);
+    var aCall = suae.requestPending[aJso.id];
+    if (aCall) {
+      if (--suae.requestCount === 0) {
+        clearTimeout(suae.requestTimer);
+        suae.requestTimer = null;
+      }
+      delete suae.requestPending[aJso.id];
+      aCall(aJso);
+    }
+  } ,
+
+  _onTimeout: function() {
+    alert('server not responding');
+  } ,
+
+  _onDisconnect: function() {
+    suae.socket.connect(); //. dim screen and let user reconnect
+  } ,
+
+  start: function () {
+    document.addEventListener('keydown', function(iEvt) { if (iEvt.keyCode === 27) iEvt.preventDefault(); }, true);
+
+    this.paletteMgr.init();
+
+    for (var a in suae.menus)
+      suae.menus[a] = suae.paletteMgr.embed(suae.menus[a], document.getElementById('suaemenu.'+a), suae.pMgr);
+
+    io.setPath("/socket.io/");
+    this.socket = new io.Socket(location.hostname, {port:location.port, transports:['xhr-multipart']});
+    this.socket.on('message', this._onMessage);
+    this.socket.on('disconnect', this._onDisconnect);
+    this.socket.connect();
+
+    //.this.svcMgr.start();
+    this.pMgr.pgInit();
+    this.pMgr.init();
+    window.onbeforeunload = function() {
+      suae.touchFlush();
+      //.this.svcMgr.end();
+    };
+  }
+};
+
+suae.menus = {
+  tools: '\
+    <div class="palgrid" name="tool" style="position:static;" cellclass="palgridrow" cellstyle="width:7em; height:16px;">\
+      <div value="textEdit">Text</div>\
+      <div value="imageEdit_">Image</div>\
+      <div value="attachEdit_">Attachment</div>\
+      <div value="noteEdit">Note/Chat</div>\
+      <div value="paletteEdit">Palette</div>\
+      <div value="myEdit">Example</div>\
+    </div>' ,
+  layout: '\
+    <size h="140px"></size>\
+    <div class="palbutton" name="knobs" style="position:static; width:7em; height:16px;">Hide Knobs</div>' ,
+  page: '\
+    <div class="palmenu" name="pgsort" cellstyle="height:16px;" style="position:static; width:4em; height:16px;">\
+      <div value="name">named</div>\
+      <div value="added">added</div>\
+    </div>\
+    <div class="palbutton" name="pagenew" style="top:4px; right:5px; height:16px;">new</div>\
+    <div class="palpanel" name="pages" style="position:static; margin-top:15px; width:100%; border-width:0;">\
+      <div class="palsubpanel" name="pagename">\
+        <div class="palgrid" name="pagenamelist" style="position:static; cursor:pointer;" cellclass="palgridrow" cellstyle="width:7em; height:16px;">\
+          <div value="oid">page</div></div>\
+      </div><div class="palsubpanel" name="pageadded">\
+        <div class="palgrid" name="pageaddedlist" style="position:static; cursor:pointer;" cellclass="palgridrow" cellstyle="width:7em; height:16px;">\
+          <div value="oid">page</div></div>\
+      </div></div>' ,
+  circ: '\
+    <div class="palbutton" name="send" style="position:static; height: 16px; width: 7em;">x revision</div>\
+    <div class="palpanel" name="service" style="border-style: none; overflow:visible; top: 33px; left: 6px; width: 8em; height: 26px;">\
+      <div class="palsubpanel" name="havesvc">\
+        <div class="palmenu" name="svc" cellstyle="min-width:3em; height:16px;" style="top: 0pt; left: 1px; height: 16px; width: 7em;">\
+          <div value="tbd">Select Service</div></div></div>\
+      <div class="palsubpanel" name="needsvc">\
+        <div class="palhtml" name="svclink" style="top: 0pt; left: 5px;">\
+          <div value="one"><a href="suae:signup" onclick="suae.pMgr.goUser(\'#users.1\'); return false">Signup</a></div></div></div>\
+    </div>\
+    <div class="paltext" name="newmember" style="top: 66px; left: 8px; width: 8em;">Add Member</div>\
+    <div class="palhtml" name="members" style="position: static; margin-top: 60px; width: 100%;">\
+      <div value="one"><a href="suae:try" onclick="suae.pMgr.goProj(\'#users\'); return false">One Link</a></div>\
+    </div>' ,
+  proj: '\
+    <div class="palbutton" name="revhistory" style="position:static; height: 16px; width: 7em;">Rev. History </div>\
+    <div class="palbutton" name="names" style="position:static; height:16px; width:7em; margin: 2px 0;">Titles</div>\
+    <div class="pallabel" name="publish" style="position:static">Publishing   </div>\
+    <div class="pallabel" name="publicz" style="position:static">Publicize    </div>\
+    <div class="palbutton" name="msglog" style="position:static; height:16px; width:7em;">Message Log</div>' ,
+  help: '\
+    <div class="pallabel" name="popups" style="position:static">Popup Docs  </div>\
+    <div class="pallabel" name="tutors" style="position:static">Tutorials   </div>\
+    <div class="pallabel" name="usrfor" style="position:static">User Forum  </div>\
+    <div class="pallabel" name="supprt" style="position:static">Get Support </div>' ,
+  suae: '\
+    <div class="palbutton" name="x" style="position:static; float:right; height:1em; width:1em">&#x00d7;</div>\
+    <div class="palbutton" name="x" style="position:static; float:right; height:1em; width:1em">&#x25a1;</div>\
+    <div class="palbutton" name="x" style="position:static; float:right; height:1em; width:1em">&#x2212;</div>\
+    <div class="pallabel" name="x" style="position:static; margin:36px 0 0 0;">Settings </div>\
+    <div class="palbutton" name="cleardb" style="position:static; margin:4px 0 0 0;">Clear DB</div>' ,
+  nav: '\
+    <size w="100%" h="70px"></size>\
+    <div class="palbutton" name="pjback" style="top:3px; left:3px; width:25px; height:25px; font-size:150%; -moz-border-radius:40% 0 0 40%;">&lt;</div>\
+      <div class="palbutton" name="pjforw" style="top:8px; left:36px; width:15px; height:15px; -moz-border-radius:0 40% 40% 0;">&gt;</div>\
+    <div class="palmenu" name="pjsort" cellstyle="height:16px;" style="top: 41px; left: 3px; width: 5em; height: 16px;">\
+      <div value="name">named</div>\
+      <div value="created">created</div>\
+    </div>\
+    <div class="palbutton" name="pjnew" style="top: 41px; left: 132px; height: 16px; width: 2.5em;">new</div>\
+    <div class="palpanel" name="navbar" style="top:70px; left:0; width:100%; border-width:0; font-size:111%;">\
+      <div class="palsubpanel" name="navname">\
+        <div class="palgrid" name="navnamelist" style="position:static;" cellclass="palgridrow" tag="navbaritem"><div value="nil">nil</div></div>\
+      </div><div class="palsubpanel" name="navcreated">\
+        <div class="palgrid" name="navcreatedlist" style="position:static;" cellclass="palgridrow" tag="navbaritem"><div value="nil">nil</div></div>\
+      </div></div>'
+};
+
+suae.pMgr = {
+  navState: null,
+  navUpdate: { type:'setClientNav', data:null },
+  projIndex: null,
+  userIndex: null,
+  inviteIndex: null,
+
+  pj: { },      // projects list
+  pjCurr: null,  // user-selected project
+
+  menuTmpl: null,    // node template for page menu
+
+  kUserOnclick: "suae.pMgr.goUser(suae.hrefOid(this.href)); return false;",
+
+  kRevPanelSpec: '<size w="250px" h="600px"></size>\
+    <div class="pallabel" name="title" style="top:5px; left:5px;">Revision History</div>\
+    <div class="palhtml" name="revcurr" style="top:25px; left:5px;">\
+      <div value="link"><a href="suae:current" onclick="suae.pMgr.markRevision(null); suae.pMgr.goRev(suae.pMgr.pjCurr.curr, null); return false;">Current</a></div></div>\
+    <div class="palhtml" name="revlist" order="-" style="top:50px; left:5px;"></div>',
+
+  kMsgPanelSpec: '<size w="300px" h="600px"></size>\
+    <div class="pallabel" name="title" style="top:5px; left:5px;">Message History</div>\
+    <div class="palhtml" name="msglist" order="-" style="position:static; margin:25px 5px 0;"></div>\
+    <div class="palbutton" name="msglistPrevBtn" style="position:static; width:100px; margin:10px 5px 0 auto;">Previous</div>\
+    <div class="palhtml" name="msglistPrev" style="position:static; margin:10px 5px"></div>',
+
+  kNamesPalSpec: '<size w="250px" h="210px"></size>\
+    <div class="pallabel" name="title" style="top: 10px; left: 10px;">Page Name</div>\
+    <div class="pallabel" name="pgname" style="top: 35px; left: 25px;">pagename</div>\
+    <div class="paltext" name="pgtext" style="top: 65px; left: 25px; width: 195px;"></div>\
+    <div class="pallabel" name="auto1" style="top: 110px; left: 10px;">Project Name</div>\
+    <div class="pallabel" name="pjname" style="top: 135px; left: 25px;">projectname</div>\
+    <div class="paltext" name="pjtext" style="top: 165px; left: 25px; width: 195px;"></div>' ,
+
+  init: function() {
+    this.projIndex = {textsource:'name', i:[ {order:'+', source:'name', o:[]}, {order:'-', source:'created', o:[]} ]};
+    this.inviteIndex = {textsource:'name', i:[ {order:'+', source:'from', o:[]}, {order:'-', source:'dated', o:[]} ]};
+
+    this.menuTmpl = suae.menus.page.getWidgetByName('pages');
+
+    //.this.userIndex = suae.read('userindex');
+
+    var that = this;
+    suae.request({type:'getClientNav'}, function(jso) {
+      that.navState = that.navUpdate.data = jso.data;
+
+      suae.request({type:'getList'}, function(jso) {
+        for (var a=0; a < jso.list.length; ++a)
+          suae.indexAdd(that.projIndex, jso.list[a].oid, jso.list[a].data);
+        for (var aI=0; aI < that.projIndex.i.length; ++aI) {
+          var aName = 'nav'+ that.projIndex.i[aI].source +'list';
+          suae.menus.nav.listDelete(aName, null);
+          for (var aP=0; aP < that.projIndex.i[aI].o.length; ++aP)
+            suae.menus.nav.listSet(aName, that.projIndex.i[aI].o[aP].id, that.projIndex.i[aI].o[aP].text);
+        }
+
+        suae.menus.nav.showPanel('nav'+ that.navState.sort);
+        suae.menus.nav.setValue('pjsort', that.navState.sort);
+        that.goHistory(that.navState.history.n -1);
+      });
+    });
+  } ,
+
+  update: function(iJso) {
+    if (iJso.project && !this.pj[iJso.project])
+      return;
+    for (var a=0; a < iJso.list.length; ++a) {
+      switch (iJso.list[a].type) {
+      case 'invite':
+        suae.indexAdd(this.inviteIndex, iJso.list[a].oid, iJso.list[a].invite);
+        break;
+      case 'project':
+        this.updateNavPanels(iJso.list[a]);
+        break;
+      case 'projectdata':
+        this.updateNavPanels(iJso.list[a], true);
+        if (this.pj[iJso.list[a].oid]) {
+          this.pj[iJso.list[a].oid].update.data = iJso.list[a].data;
+          if (this.pjCurr.oid === iJso.list[a].oid)
+            this.pjCurr.namesPal.setValue('pjname', this.pjCurr.update.data.name);
+        }
+        break;
+      case 'page':
+        this.updatePagePanels(iJso.project, iJso.list[a]);
+        break;
+      case 'pagedata':
+        if (iJso.list[a].data)
+          this.updatePagePanels(iJso.project, iJso.list[a], true);
+        if (iJso.list[a].layout) {
+          var aPage = this.pj[iJso.project].page[iJso.list[a].oid];
+          if (aPage)
+            this.updateLayout(aPage, iJso.list[a].layout);
+        }
+        break;
+      case 'part':
+        if (!this.pj[iJso.project].part[iJso.list[a].oid])
+          this.pj[iJso.project].part[iJso.list[a].oid] = { data:null, instance:{} };
+        this.pj[iJso.project].part[iJso.list[a].oid].data = iJso.list[a].data;
+        for (var aPt in this.pj[iJso.project].part[iJso.list[a].oid].instance) {
+          var aApp = this.pj[iJso.project].part[iJso.list[a].oid].instance[aPt];
+          var aId = aPt.split('|');
+          try {
+          aApp.update(aId[0], aId[1], this.pj[iJso.project].part[iJso.list[a].oid].data);
+          } catch (aEr) {
+            this.postMsg('App error: '+aApp.kAppName+'.update() '+aEr);
+          }
+        }
+        break;
+      case 'member':
+        if (this.pjCurr === this.pj[iJso.project]) {
+          this.listMember(iJso.uid);
+          if (this.pjCurr.userindex.i[0].o.length === 0) {
+            suae.menus.circ.setValue('send', 'send revision');
+            suae.menus.circ.enable('svc', false);
+          }
+        }
+        suae.indexDelete(this.pj[iJso.project].userindex, iJso.uid);
+        suae.indexAdd(this.pj[iJso.project].userindex, iJso.uid, iJso);
+        break;
+      case 'revision'://. need state for rev
+        this.addRevision(this.pj[iJso.project], iJso.list[a]);
+        if (this.pjCurr === this.pj[iJso.project] && this.pjCurr.userindex.i[0].o.length === 0)
+          suae.menus.circ.enable('svc', true);
+        var aRev = false;//.iJso.list[a];
+        break;
+      case 'message':
+        var aMsg = '<div class="msgpanelitem">'+ iJso.list[a].html +'<span class="msgpaneldate">@'+ iJso.list[a].date +'</span></div>';
+        this.pj[iJso.project].msgPanel.listSet('msglist', this.pj[iJso.project].msgPanelNext++, aMsg);
+        break;
+      default:
+        alert('unknown update type: '+iJso.list[a].type);
+      }
+    }
+    if (aRev) {
+      for (var a=0; a < aRev.page.length; ++a)
+        suae.pMgr.revisePage(aRev.page[a].oid, aRev.page[a].diff);
+    }
+  } ,
+
+  touchState: function(iJso) {
+    var aState = this.pjCurr.stateUpdate.data;
+    switch (iJso.type) {
+    case 'projstate':
+      break;
+    case 'page':
+      if (!aState.page[iJso.oid])
+        aState.page[iJso.oid] = {};
+      if (!aState.page[iJso.oid][iJso.rev]);
+        aState.page[iJso.oid][iJso.rev] = iJso;
+      break;
+    case 'part':
+      if (!aState.page[this.pjCurr.curr])
+        aState.page[this.pjCurr.curr] = {};
+      if (!aState.page[this.pjCurr.curr][' '])
+        aState.page[this.pjCurr.curr][' '] = {type:'page', oid:this.pjCurr.curr, rev:' ', focus:null, scroll:{}, part:{}};
+      if (!aState.page[this.pjCurr.curr][' '].part[iJso.oid])
+        aState.page[this.pjCurr.curr][' '].part[iJso.oid] = iJso;
+      break;
+    default:
+      throw 'touchState(): Unknown tag name "'+ iJso.type +'"';
+    }
+    suae.touch(this.pjCurr.stateUpdate);
+  } ,
+
+  newProj: function() {
+    var that = this;
+    suae.request({type:'newProject'}, function(update) {
+      that.goProj(update.list[0].oid);
+    });
+  } ,
+
+  updateNavPanels: function(iJso, iReplace) {
+    this.updatePagePanels(null, iJso, iReplace);
+  } ,
+
+  updatePagePanels: function(iProjOid, iJso, iReplace) {
+    var aIdx = !iProjOid ? this.projIndex : this.pj[iProjOid].pageindex;
+    var aId = iJso.oid || iJso.project;
+    if (iReplace)
+      suae.indexDelete(aIdx, aId);
+    suae.indexAdd(aIdx, aId, iJso.data);
+    var aSet = iProjOid ? 'page' : 'nav';
+    var aPal = !iProjOid || iProjOid === this.pjCurr.oid ? suae.menus[aSet] : this.pj[iProjOid].altPalette;
+    if (aPal !== suae.menus[aSet])
+      aPal.appendWidget(this.pj[iProjOid].menu);
+    for (var aI=0; aI < aIdx.i.length; ++aI) {
+      var aName = aSet + aIdx.i[aI].source +'list';
+      aPal.listSet(aName, aId, iJso.data.name);
+      aPal.listMove(aName, aId, suae.indexFind(aIdx, aId).pos);
+    }
+  } ,
+
+  getMsgList: function() {
+    var aProj = this.pjCurr;
+    aProj.msgPanel.enable('msglistPrevBtn', false);
+    suae.request({type:'getMsgList', project:aProj.oid}, function(jso) {
+      for (var a=aProj.msgPanelNext; a < jso.list.length; ++a)
+        aProj.msgPanel.listSet('msglistPrev', a.toString(),
+          '<div class="msgpanelitem">'+ jso.list[a].html +'<span class="msgpaneldate">@'+ jso.list[a].date +'</span></div>');
+    });
+  } ,
+
+  postMsg: function(iText) {
+    var aProj = this.pjCurr, that = this;
+    suae.request({type:'postMsg', project:this.pjCurr.oid, msg:iText}, function(jso) {
+      if (that.pjCurr === aProj)
+        aProj.msgPanel.show();
+    });
+  } ,
+
+  markRevision: function(iDiv) {
+    if (this.pjCurr.revLink) {
+      this.pjCurr.revLink.style.backgroundColor = null;
+      this.pjCurr.revLink.parentNode.style.borderWidth = '1px';
+      this.pjCurr.revLink.parentNode.style.padding = '3px';
+    }
+    if (iDiv) {
+      iDiv.style.backgroundColor = '#ddf';
+      iDiv.parentNode.style.borderWidth = '3px';
+      iDiv.parentNode.style.padding = '1px';
+    }
+    this.pjCurr.revLink = iDiv;
+  },
+
+  addRevision: function(iProj, iRev) {
+    if (!iProj.revPanel)
+      return;
+    var aHtml = '<div class="revpanelrev">'+ iRev.date;
+
+    for (var aPg in iRev.map.page) {
+      var aClik = "suae.pMgr.markRevision(this.parentNode); suae.pMgr.goRev('"+ aPg +"','"+ iRev.oid +"'); return false;";
+      aHtml += '<div><a href="suae:'+ iRev.oid +'" onclick="'+ aClik +'">'+ suae.indexFind(iProj.pageindex, aPg).text
+        +'</a> @ '+ iRev.map.page[aPg].touch;
+
+      for (var aPt in iRev.map.page[aPg].part) {
+        aHtml += '<div style="margin-left:2em">'+ iRev.map.page[aPg].part[aPt].op +' '+ iRev.map.page[aPg].part[aPt].class
+          +' @ '+ iRev.map.page[aPg].part[aPt].touch +'</div>';
+      }
+      aHtml += '</div>'
+    }
+    aHtml += '</div>'
+    iProj.revPanel.listSet('revlist', iRev.oid, aHtml);
+  } ,
+
+  goProj: function(iOid, iPage) {
+    if (this.pjCurr === this.pj[iOid]) {
+      if (iPage)
+        this.goPage(iPage, true);
+      return;
+    }
+
+    if (!this.pj[iOid]) {
+      this.pj[iOid] = {
+        oid: null,
+        update: {type:'write', project:iOid, data:null},
+        stateUpdate: {type:'setClientState', project:iOid, data:null},
+        curr: null,
+        currRev: null,
+        userindex: {textsource:'name', i:[ {order:'+', source:'name', o:[]}, {order:'-', source:'added', o:[]} ]},
+        pageindex: {textsource:'name', i:[ {order:'+', source:'name', o:[]}, {order:'-', source:'added', o:[]} ]},
+        menu: this.menuTmpl.cloneNode(true),
+        altPalette: suae.paletteMgr.create('', 0, 0, this),
+        revPanel: suae.paletteMgr.create(this.kRevPanelSpec, 250, 600, this),
+        msgPanel: suae.paletteMgr.create(this.kMsgPanelSpec, 5, 5, this),
+        msgPanelNext: 0,
+        namesPal: suae.paletteMgr.create(this.kNamesPalSpec, 40, 300, this),
+        page: {},
+        part: {},
+        lastAccess: new Date
+      };
+      this.loading = iOid;
+      var that = this;
+      suae.request({type:'subscribe', project:iOid}, function(jso) {
+        that.pj[iOid].oid = iOid;
+        that.pj[iOid].update.data = jso.data;
+        for (var a=0; a < jso.page.length; ++a)
+          suae.indexAdd(that.pj[iOid].pageindex, jso.page[a].oid, jso.page[a].data);
+        for (var a=0; a < jso.member.length; ++a)
+          suae.indexAdd(that.pj[iOid].userindex, jso.member[a].uid, jso.member[a]);
+        for (var a=0; a < jso.revision.length; ++a)
+          that.addRevision(that.pj[iOid], jso.revision[a]);
+        var aIi = that.pj[iOid].pageindex.i[0];
+        that.pj[iOid].stateUpdate.data = jso.state || {type:'projstate', select:{sort:aIi.source, page:aIi.o.length ? aIi.o[0].id : ''}, page:{}};
+        if (that.loading === iOid)
+          that.goProj(iOid, iPage);
+      });
+      return;
+    }
+    if (!this.pj[iOid].oid) {
+      this.loading = iOid;
+      return;
+    }
+
+    this.loading = null;
+    this.pjCurr = this.pj[iOid];
+
+    suae.menus.nav.setValue('nav'+ this.navState.sort +'list', iOid);
+
+    suae.menus.page.removeWidget('pages');
+    suae.menus.page.appendWidget(this.pjCurr.menu);
+    if (this.pjCurr.curr === null) {
+      this.pjCurr.curr = this.pjCurr.stateUpdate.data.select.page;
+      for (var aI=0; aI < this.pjCurr.pageindex.i.length; ++aI) {
+        var aListN = 'page'+ this.pjCurr.pageindex.i[aI].source +'list';
+        suae.menus.page.listDelete(aListN, null);
+        for (var aO=0; aO < this.pjCurr.pageindex.i[aI].o.length; ++aO)
+          suae.menus.page.listSet(aListN, this.pjCurr.pageindex.i[aI].o[aO].id, this.pjCurr.pageindex.i[aI].o[aO].text);
+      }
+      suae.menus.page.setValue('pgsort', this.pjCurr.stateUpdate.data.select.sort);
+      suae.menus.page.showPanel('page'+ this.pjCurr.stateUpdate.data.select.sort);
+    }
+    var aEditable = ! /^#autogen/.test(this.pjCurr.oid);
+    suae.menus.circ.setValue('send', this.pjCurr.userindex.i[0].o.length ? 'send revision' : 'file revision');
+    suae.menus.circ.setValue('svc', aEditable ? this.pjCurr.update.data.service || 'tbd' : null);
+    suae.menus.circ.enable('svc', aEditable && this.pjCurr.userindex.i[0].o.length === 0);
+    suae.menus.circ.setValue('newmember', aEditable ? 'Add Member' : '');
+    suae.menus.circ.enable('newmember', aEditable && this.pjCurr.update.data.service);
+    suae.menus.circ.listDelete('members', null);
+    for (var a=0; a < this.pjCurr.userindex.i[0].o.length; ++a)
+      this.listUser(this.pjCurr.userindex.i[0].o[a].id);
+
+    this.enableEdit(aEditable && !this.pjCurr.currRev);
+
+    suae.menus.proj.enable('revhistory', aEditable);
+    suae.menus.proj.enable('names', aEditable);
+
+    if (this.pjCurr.currRev)
+      this.pjCurr.revPanel.show();
+
+    var aPage = iPage || this.pjCurr.curr;
+    this.pjCurr.curr = null;  // so goPage takes our order
+    this.goPage(aPage, !!iPage);
+  } ,
+
+  enableEdit: function(iState) {
+    suae.menus.circ.enable('send', iState);
+    suae.menus.page.enable('pagenew', iState);
+    suae.menus.tools.enable('tool', iState);
+
+    var aList = document.styleSheets[0].cssRules;
+    for (var a=0; a < aList.length; ++a)
+      if (aList[a].selectorText === '.partknob') {
+        aList[a].style.display = iState ? null : 'none';
+        break;
+      }
+  } ,
+
+  newPage: function() {
+    var that = this;
+    var aProj = this.pjCurr;
+    suae.request({type:'newPage', project:aProj.oid}, function(jso) {
+      if (that.pjCurr === aProj)
+        that.goPage(jso.list[0].oid);
+    });
+  } ,
+
+  goPage: function(iOid, iNoHistory) {
+    if (this.pjCurr.curr === iOid)
+      return;
+    if (!iNoHistory) {
+      var aN = this.navState.history.n;
+      var aI = {proj:this.pjCurr.oid, page:iOid};
+      if (aN === this.navState.history.i.length)
+        this.navState.history.i.push(aI);
+      else
+        this.navState.history.i[aN] = aI;
+      this.navState.history.n = ++aN;
+      this.navState.history.len = aN;
+      suae.touch(this.navUpdate);
+      suae.menus.nav.enable('pjback', aN > 1);
+      suae.menus.nav.enable('pjforw', false);
+    }
+    suae.paletteMgr.closeAllExcept(this.pjCurr.revPanel);
+    this.pjCurr.namesPal.setValue('pjname', this.pjCurr.update.data.name);
+    this.pjCurr.namesPal.setValue('pgname', suae.indexFind(this.pjCurr.pageindex, iOid).text);
+    this.pjCurr.curr = iOid;
+    suae.menus.page.setValue('page'+ this.pjCurr.stateUpdate.data.select.sort +'list', iOid);
+    this.pjCurr.stateUpdate.data.select.page = iOid;
+    this.touchState(this.pjCurr.stateUpdate.data);
+    var aState = this.pjCurr.stateUpdate.data.page[iOid];
+    this.loadPage(iOid, this.pjCurr, aState && aState[this.pjCurr.currRev || ' '], this.pjCurr.currRev);
+  } ,
+
+  goHistory: function(iN) {
+    this.goProj(this.navState.history.i[iN].proj, this.navState.history.i[iN].page);
+    this.navState.history.n = ++iN;
+    suae.touch(this.navUpdate);
+    suae.menus.nav.enable('pjback', iN > 1);
+    suae.menus.nav.enable('pjforw', iN < this.navState.history.len);
+  } ,
+
+  goRev: function(iPage, iRev) {
+    if (this.pjCurr.curr !== iPage) {
+      this.pjCurr.currRev = iRev;
+      this.enableEdit(iRev === null);
+      return this.goPage(iPage);
+    }
+    if (this.pjCurr.currRev === iRev)
+      return;
+    this.pjCurr.currRev = iRev;
+    this.enableEdit(iRev === null);
+    suae.paletteMgr.closeAllExcept(this.pjCurr.revPanel);
+    this.loadPage(this.pjCurr.curr, this.pjCurr, this.pjCurr.stateUpdate.data.page[this.pjCurr.curr][iRev], iRev);
+  } ,
+
+  /*goUser: function(iUid) {
+    if (this.pj['#users'] && this.pj['#users'] !== this.pjCurr)
+      this.pj['#users'].curr = iUid;
+    this.goProj('#users');
+    this.goPage(iUid);
+  } ,
+
+  newUserPage: function(iUid) {
+    var aPt = suae.store({type:'part', xml:'<h3>Profile for '+ iUid +'</h3>'});
+    var aPg = suae.readOrStore({type:'page', oid:iUid,
+      data:{ name:iUid, added:dateFormat('isoUtcDateTime'), project:{oid:'#users', index:'userindex'} },
+      layout:[ {class:'htmlEdit', pid:suae.newOid(), name:aPt, style:'top:30px; left:30px; width:300px; height:100px;'} ]});
+    this.updatePagePanels('#users', 'userindex', aPg);
+    if (suae.indexFind(this.pjCurr.userindex, iUid))
+      this.listUser(iUid);
+  } ,*/
+
+  listMember: function(iUid) {
+    var aUser = null;//suae.indexFind(this.userIndex, iUid);
+    var aHtml = aUser ? '<a href="suae:'+ iUid +'" onclick="'+ this.kUserOnclick +'">'+ aUser.text +'</a>' : '<i>'+ iUid +'</i>';
+    suae.menus.circ.listSet('members', iUid, aHtml);
+  } ,
+
+  paletteEvent: function(iPal, iName, iValue) {
+    switch (iName) {
+    case 'tool':
+      this.selectEditor(iValue);
+      break;
+    case 'knobs':
+      break;
+    case 'pgsort':
+      suae.menus.page.showPanel('page'+iValue);
+      this.pjCurr.stateUpdate.data.select.sort = iValue;
+      this.touchState(this.pjCurr.stateUpdate.data);
+      suae.menus.page.setValue('page'+ iValue +'list', this.pjCurr.curr);
+      break;
+    case 'pagenamelist':
+    case 'pageaddedlist':
+      this.goPage(iValue);
+      break;
+    case 'pagenew':
+      this.newPage();
+      break;
+    case 'send':
+      var that = this, aProj = this.pjCurr;
+      suae.touchFlush(function() {
+        suae.request({type:'commitRevision', project:aProj.oid}, function(jso) {
+          if (that.pjCurr === aProj)
+            that.pjCurr.revPanel.show();
+        });
+      });
+      break;
+    case 'names':
+      this.pjCurr.namesPal.show();
+      break;
+    case 'pjtext':
+      this.pjCurr.update.data.name = iValue;
+      suae.touch(this.pjCurr.update);
+      this.pjCurr.namesPal.setValue('pjname', iValue);
+      this.updateNavPanels(this.pjCurr.update, true);
+      break;
+    case 'pgtext':
+      var aPage = this.pjCurr.page[this.pjCurr.curr];
+      aPage.update.data.data.name = iValue;
+      suae.touch(aPage.update);
+      this.pjCurr.namesPal.setValue('pgname', iValue);
+      this.updatePagePanels(this.pjCurr.oid, aPage.update.data, true);
+      break;
+    case 'revhistory':
+      this.pjCurr.revPanel.show();
+      break;
+    case 'msglog':
+      this.pjCurr.msgPanel.show();
+      break;
+    case 'msglistPrevBtn':
+      this.getMsgList();
+      break;
+    case 'svc':
+      this.pjCurr.update.data.service = iValue === 'tbd' ? '' : iValue;
+      suae.request(this.pjCurr.update, function(jso) {
+        if (jso.status !== 'ok')
+          throw 'paletteEvent svc: unexpected result';
+        suae.menus.circ.setValue('newmember', 'Add Member');//.call on update
+        suae.menus.circ.enable('newmember', iValue !== 'tbd');
+      });
+      break;
+    case 'newmember':
+      suae.menus.circ.setValue('newmember', 'Add Member');
+      if (!suae.indexFind(this.pjCurr.userindex, iValue))
+        suae.request({type:'addMember', project:this.pjCurr.oid, uid:iValue}, function(jso) {
+          if (jso.status !== 'ok')
+            throw 'addMember(): unexpected result';
+        });
+      break;
+    case 'pjsort':
+      suae.menus.nav.showPanel('nav'+iValue);
+      this.navState.sort = iValue;
+      suae.touch(this.navUpdate);
+      suae.menus.nav.setValue('nav'+ iValue +'list', this.pjCurr.oid);
+      break;
+    case 'navnamelist':
+    case 'navcreatedlist':
+      this.goProj(iValue);
+      break;
+    case 'pjback':
+      this.goHistory(this.navState.history.n -2);
+      break;
+    case 'pjforw':
+      this.goHistory(this.navState.history.n);
+      break;
+    case 'pjnew':
+      this.newProj();
+      break;
+    default:
+      throw 'pMgr.paletteEvent(): widget '+iName+' not known';
+    }
+  } ,
+
+  htmlFactory: document.createElement('div'),
+
+  kScreenHtml: '<div class="screen"\
+    ><div class="screenclip"\
+      ><div class="screendata" name="pageId" style="top:0; left:0;"\
+        ><div class="dragbox" style=""></div></div></div></div>' ,
+
+  kPartHtml: '<div class="part" pid="partId" style=""\
+    ><div class="partframe"></div\
+    ><div class="partknob" name="tl" style="top:   -8px; left: -8px;"></div\
+    ><div class="partknob" name="t"  style="top:   -8px; left:  8px;"></div\
+    ><div class="partknob" name="l"  style="top:    8px; left: -8px;"></div\
+    ><div class="partknob" name="wh" style="bottom:-8px; right:-8px;"></div\
+    ><div class="partknob" name="h"  style="bottom:-8px; right: 8px;"></div\
+    ><div class="partknob" name="w"  style="bottom: 8px; right:-8px;"></div></div>' ,
+
+  kGroupHtml: '<div class="groupknobs" name="groupId" style="position:absolute; top:-20px; left:-20px;"\
+    ><div class="partknob" name="gtl" style="top:0;   left:0;   background-color:#d0d;"></div\
+    ><div class="partknob" name="gt"  style="top:0;   left:9px; background-color:#d0d;"></div\
+    ><div class="partknob" name="gl"  style="top:9px; left:0;   background-color:#d0d;"></div></div>' ,
+
+  scrPane: null,  // page object for screens
+  currEditor: '', // content editor name
+  evtFn: null,
+  dragknob: null,
+  dragPage: null,
+  dragger: null,
+
+  pgInit: function() {
+    this.scrPane = document.getElementById('screenpane');
+    this.scrPane.innerHTML = this.kScreenHtml;
+
+    this.dragger = suae.dragHandler.factory();
+    this.dragger.start(this.scrPane, this, true);
+
+    var that = this;
+    this.evtFn = function(e) { that.event(e); };
+  } ,
+
+  _Page: function(iPgId, iState) {
+    this.pgid = iPgId;
+    this.screen = null;
+    this.dragbox = null;
+    this.scroll = null;
+    this.topZ = 0;
+    this.update = null;
+    this.layout = null;
+    this.div = { };
+    this.state = iState;
+    this.group = { };
+  } ,
+
+  loadPage: function(iOid, iProj, iState, iRevId) {
+    this.pjCurr.lastAccess = new Date;
+
+    this.selectEditor('');
+    this.scrPane.removeChild(this.scrPane.firstChild);
+
+    var aPgId = iRevId ? iRevId+'_'+iOid : iOid;
+    if (!iProj.page[aPgId])
+      iProj.page[aPgId] = new this._Page(aPgId, iState || {type:'page', oid:iOid, rev:iRevId||' ', focus:null, scroll:{v:0, h:0}, part:{}});
+    var aPage = iProj.page[aPgId];
+
+    if (!aPage.layout || aPage.loadCount) {
+      var that = this;
+      if (!aPage.screen) {
+        this.htmlFactory.innerHTML = this.kScreenHtml;
+        aPage.screen = this.htmlFactory.firstChild;
+        aPage.screen.firstChild.firstChild.pgid = aPgId;
+        aPage.screen.addEventListener('DOMMouseScroll', this.evtFn, false);
+
+        aPage.dragbox = aPage.screen.firstChild.firstChild.firstChild;
+
+        aPage.scroll = suae.scrollbar.factory();
+        aPage.scroll.setup(aPage.screen, suae.scrollbar.eLeft, this.scrPane.offsetHeight, function(v, h){that.scroll(aPage, v, h);});
+        aPage.scroll.objSetLen(4000);
+        aPage.scroll.objSetPos(-aPage.state.scroll.v);
+      }
+      this.scrPane.appendChild(aPage.screen);
+
+      var aPlaceParts = function() {
+        for (var a=0; a < aPage.layout.length; ++a)
+          that.placePart(aPage, aPage.layout[a]);
+        aPage.scroll.objSetLen(4000);
+      };
+
+      if (aPage.layout) {
+        aPlaceParts();
+      } else {
+        var aReq = {type:iRevId?'readPageRevision':'subscribePage', project:iProj.oid, page:iOid, revision:iRevId};
+        suae.request(aReq, function(jso) {
+          aPage.update = iRevId ? null : {type:'writePage', project:iProj.oid, page:iOid, data:jso};
+          aPage.layout = jso.layout;
+          aPage.loadCount = aPage.layout.length;
+
+          if (aPage.screen.parentNode)
+            aPlaceParts();
+        });
+      }
+    } else {
+      this.scrPane.appendChild(aPage.screen);
+      for (var a=0; a < aPage.layout.length; ++a) {
+        var aApp = suae.lookupApp(aPage.layout[a].class);
+        try {
+        var aFn;
+        aApp[aFn='view'](aPage.pgid, aPage.layout[a].pid);
+        if (aPage.state.focus === aPage.layout[a].pid)
+          aApp[aFn='focus'](aPage.pgid, aPage.layout[a].pid, false);
+        } catch (aEr) {
+          this.postMsg('App error: '+aPage.layout[a].class+'.'+aFn+'(): '+aEr);
+        }
+      }
+    }
+  } ,
+
+  updateLayout: function(iPage, iLayout) {
+    for (var a=0; a < iLayout.length; ++a) {
+      for (var aPt=0; aPt < iPage.layout.length && iPage.layout[aPt].pid !== iLayout[a].pid; ++aPt) {}
+      if (aPt < iPage.layout.length) {
+        if (suae.areEqual(iPage.layout[aPt], iLayout[a]))
+          iPage.layout.splice(aPt, 1);
+        else {
+          for (var aEl=iPage.screen.firstChild.firstChild.firstChild; aEl.id !== iLayout[a].pid; aEl = aEl.nextSibling) {}
+          aEl.setAttribute('style', iLayout[a].style);
+        }
+      } else {
+        ++iPage.loadCount;
+        if (iPage.screen.parentNode)
+          this.placePart(iPage, iLayout[a]);
+      }
+    }
+    for (var a=0; a < iPage.layout.length; ++a) {
+      var aEl = document.getElementById(iPage.layout[a].pid);
+      aEl.parentNode.removeChild(aEl);
+      var aApp = suae.lookupApp(iPage.layout[a].class);
+      try {
+      aApp.close(iPage.pgid, iPage.layout[a].pid);
+      } catch (err) {
+        this.postMsg('App error: '+iPage.layout[a].class+'.close(): '+err);
+      }
+      //. if (iPage.layout[a].oid) delete project.part[iPage.layout[a].oid].instance[iPage.pgid+'|'+iPage.layout[a].pid];
+    }
+    iPage.layout = iLayout;
+  } ,
+
+  revisePage: function(iProj, iOid) {
+    //. should compare layouts and apply changes
+    if (!iProj.page[iOid])
+      return;
+    var aPrev = iProj.page[iOid];
+    iProj.page[iOid] = new this._Page(iOid, aPrev.state);
+    if (aPrev.rev) {
+      iProj.page[iOid].rev = aPrev.rev;
+      delete aPrev.rev;
+    }
+    if (this.pjCurr.curr === iOid && this.pjCurr.currRev === null)
+      this.loadPage(iOid, iProj);
+    this.releasePage(iProj, aPrev);
+  } ,
+
+  releasePage: function(iProj, iPage) {
+    for (var a=0; a < iPage.layout.length; ++a) {
+      delete iProj.part[iPage.layout[a].oid].instance[iPage.layout[a].pid];
+      for (var aI in iProj.part[iPage.layout[a].oid].instance) { break; }
+      if (!aI)
+        delete iProj.part[iPage.layout[a].oid];
+      var aApp = suae.lookupApp(iPage.layout[a].class);
+      try {
+      aApp.close(iPage.pgid, iPage.layout[a].pid);
+      } catch (aEr) {
+        this.postMsg('App error: '+aApp.kAppName+'.close() '+aEr);
+      }
+    }
+  } ,
+
+  addContent: function(iType, iPage) {
+    var that = this;
+    suae.request({type:'newPart', project:this.pjCurr.oid}, function(jso) {
+      iPage.layout.push({class:iType, pid:jso.a, oid:jso.b, outofband:/_$/.test(iType), style:iPage.dragbox.getAttribute('style'), metadata:{}});
+      suae.touch(iPage.update);
+      ++iPage.topZ;
+
+      iPage.state.focus = jso.a;
+      that.touchState(iPage.state);
+
+      ++iPage.loadCount;
+      if (iPage.screen.parentNode)
+        that.placePart(iPage, iPage.layout[iPage.layout.length-1]);
+    });
+  } ,
+
+  placePart: function(iPage, iPartJso) {
+    if (document.getElementById(iPartJso.pid))
+      return;
+    var aApp = suae.lookupApp(iPartJso.class);
+    if (!aApp) {
+      suae.loadAppForPart(iPartJso.class, iPage.pgid, iPartJso.pid);
+      return;
+    }
+    this.htmlFactory.innerHTML = this.kPartHtml;
+    var aDiv = this.htmlFactory.firstChild;
+    aDiv.id = aDiv.pid = iPartJso.pid;
+    aDiv.setAttribute('style', iPartJso.style);
+    iPage.screen.firstChild.firstChild.appendChild(aDiv);
+
+    var aReq = iPartJso.outofband ? '/part?oid='+iPartJso.oid+'&project='+this.pjCurr.oid+'&page='+iPage.pgid :
+      iPage.pgid.indexOf('_') >= 0 ? null : {type:'writePart', project:this.pjCurr.oid, page:iPage.pgid, part:iPartJso.oid, data:null};
+    try {
+    aApp.open(iPage.pgid, iPartJso.pid, aDiv.firstChild, iPage.state.part[iPartJso.pid] || {type:'part', oid:iPartJso.pid}, aReq, iPartJso.metadata);
+    } catch (aEr) {
+      this.postMsg('App error: '+aApp.kAppName+'.open() '+aEr);
+    }
+
+    if (+ aDiv.style.zIndex > iPage.topZ)
+      iPage.topZ = + aDiv.style.zIndex;
+
+    if (iPartJso.group)
+      this.placeGroup(iPage, iPartJso.group, aDiv);
+
+    if (iPage.state.focus === iPartJso.pid) {
+      try {
+      aApp.focus(iPage.pgid, iPartJso.pid, false);
+      } catch (aEr) {
+        this.postMsg('App error: '+aApp.kAppName+'.focus() '+aEr);
+      }
+    }
+
+    if (!this.pjCurr.part[iPartJso.oid])
+      this.pjCurr.part[iPartJso.oid] = { data:iPartJso.outofband?true:null, instance:{} };
+    this.pjCurr.part[iPartJso.oid].instance[iPage.pgid+'|'+iPartJso.pid] = aApp;
+    if (this.pjCurr.part[iPartJso.oid].data) {
+      try {
+      aApp.update(iPage.pgid, iPartJso.pid, this.pjCurr.part[iPartJso.oid].data);
+      } catch (aEr) {
+        this.postMsg('App error: '+aApp.kAppName+'.update() '+aEr);
+      }
+    }
+    --iPage.loadCount;
+  } ,
+
+  placePartById: function(iPgId, iPtId) {
+    if (!this.pjCurr.page[iPgId])
+      return;
+    for (var a=0; this.pjCurr.page[iPgId].layout[a].pid !== iPtId; ++a) {}
+    this.placePart(this.pjCurr.page[iPgId], this.pjCurr.page[iPgId].layout[a]);
+  } ,
+
+  setPartMetadata: function(iPgId, iPtId, iMetadata) {
+    var aLyt = this.pjCurr.page[iPgId].layout;
+    for (var a=0; a < aLyt.length && aLyt[a].pid !== iPtId; ++a) {}
+    aLyt[a].metadata = iMetadata;
+    suae.touch(this.pjCurr.page[iPgId].update);
+  } ,
+
+  focusEvent: function(iPart, iInPart) {
+    var aPage = this.pjCurr.page[iPart.parentNode.pgid];
+    aPage.state.focus = iPart.pid;
+    this.touchState(aPage.state);
+    for (var a=0; aPage.layout[a].pid !== iPart.pid; ++a) {}
+    var aApp = suae.lookupApp(aPage.layout[a].class);
+    try {
+    aApp.focus(aPage.pgid, iPart.pid, iInPart);
+    } catch (aEr) {
+      this.postMsg('App error: '+aApp.kAppName+'.focus() '+aEr);
+    }
+  } ,
+
+  sizePart: function(iDiv, iWidth, iHeight) {
+    if (iDiv.parentNode.className !== 'part')
+      throw 'pgEdit.sizePart(): element is not a part';
+    if (iWidth !== '')
+      iDiv.parentNode.style.width = iWidth;
+    if (iHeight !== '')
+      iDiv.parentNode.style.height = iHeight;
+    this.setDimensions(iDiv.parentNode);
+  } ,
+
+  placeGroup: function(iPage, iGroup, iPartDiv) {
+    this.htmlFactory.innerHTML = this.kGroupHtml;
+    var aKnobs = this.htmlFactory.firstChild;
+    aKnobs.groupid = iPartDiv.parentNode.pgid +'|'+ iGroup;
+    iPartDiv.appendChild(aKnobs);
+
+    if (!iPage.group[iGroup])
+      iPage.group[iGroup] = { color: '', divs: [ ] };
+    iPage.group[iGroup].divs.push(iPartDiv);
+  } ,
+
+  selectEditor: function(iId) {
+    if (this.currEditor === iId)
+      return;
+    this.currEditor = iId;
+    if (iId === '')
+      suae.menus.tools.setValue('tool', '');
+    for (var aS=this.scrPane.firstChild; aS; aS=aS.nextSibling) {
+      aS.firstChild.style.cursor = iId === '' ? '' : 'crosshair';
+    }
+  } ,
+
+  setDimensions: function(iDiv) {
+    var aPage = this.pjCurr.page[iDiv.parentNode.pgid];
+    for (var a=0; aPage.layout[a].pid !== iDiv.pid; ++a) {}
+    aPage.layout[a].style =
+      'top: '+iDiv.style.top +'; left: '+iDiv.style.left +'; width: '+iDiv.style.width +'; height: '+iDiv.style.height+'; z-index: '+iDiv.style.zIndex+';';
+    suae.touch(aPage.update);
+  } ,
+
+  scroll: function(iPage, iVert, iHorz) {
+    iPage.screen.firstChild.firstChild.style.top = iVert + 'px';
+    iPage.screen.firstChild.firstChild.style.left = iHorz + 'px';
+    iPage.state.scroll.v = iVert;
+    iPage.state.scroll.h = iHorz;
+    this.touchState(iPage.state);
+  } ,
+
+  event: function(iEvt) {
+    switch (iEvt.type) {
+    case 'DOMMouseScroll':
+      if (iEvt.detail) {
+        var aPage = this.pjCurr.page[iEvt.currentTarget.firstChild.firstChild.pgid];
+        aPage.scroll.objSetPos(-aPage.state.scroll.v + iEvt.detail*12);
+      }
+      break;
+    }
+  } ,
+
+  handleDrag: function(iEvt) {
+    switch (iEvt.type) {
+
+    case 'mousedown':
+      var aInPart = false;
+      for (var aEl = iEvt.target; aEl.className !== 'screen'; aEl = aEl.parentNode) {
+        if (aEl.className === 'partframe')
+          aInPart = true;
+        else if (aEl.className === 'part')
+          this.focusEvent(aEl, aInPart);
+      }
+      switch (iEvt.target.className) {
+      case 'screenclip':
+        if (!this.currEditor)
+          return false;
+        this.dragPage = this.pjCurr.page[iEvt.target.firstChild.pgid];
+        this.dragPage.dragbox.style.top  = (iEvt.layerY + +this.dragPage.state.scroll.v) + 'px';
+        this.dragPage.dragbox.style.left = (iEvt.layerX + +this.dragPage.state.scroll.h) + 'px';
+        this.dragPage.dragbox.style.width  = '20px';
+        this.dragPage.dragbox.style.height = '20px';
+        this.dragPage.dragbox.style.zIndex = this.dragPage.topZ +1;
+        this.dragPage.dragbox.style.display = 'block';
+        this.dragPage.dragbox.prevX = iEvt.clientX;
+        this.dragPage.dragbox.prevY = iEvt.clientY;
+        return true;
+      case 'partknob':
+        var aWhat = iEvt.target.getAttribute('name');
+        if (/^g/.test(aWhat)) {
+          var aId = iEvt.target.parentNode.groupid.split('|');
+          this.dragknob = {
+            parts: this.pjCurr.page[aId[0]].group[aId[1]].divs,
+            top:  /t/.test(aWhat),
+            left: /l/.test(aWhat),
+            prevX: iEvt.clientX,
+            prevY: iEvt.clientY
+          };
+        } else {
+          this.dragknob = {
+            part:   iEvt.target.parentNode,
+            top:    /t/.test(aWhat),
+            left:   /l/.test(aWhat),
+            width:  /w/.test(aWhat),
+            height: /h/.test(aWhat),
+            deltaX: 0, deltaY: 0
+          };
+          this.dragknob.deltaX = iEvt.clientX - iEvt.target.parentNode[this.dragknob.left ? 'offsetLeft' : 'offsetWidth'];
+          this.dragknob.deltaY = iEvt.clientY - iEvt.target.parentNode[this.dragknob.top  ? 'offsetTop' : 'offsetHeight'];
+        }
+        return true;
+      }
+      return false;
+
+    case 'mousemove':
+      if (this.dragPage) {
+        var aLen;
+        aLen = iEvt.clientX - this.dragPage.dragbox.prevX;
+        this.dragPage.dragbox.style.width  = aLen < 20 ? '20px' : aLen +'px';
+        aLen = iEvt.clientY - this.dragPage.dragbox.prevY;
+        this.dragPage.dragbox.style.height = aLen < 20 ? '20px' : aLen +'px';
+        return true;
+      } else if (this.dragknob) {
+        if (this.dragknob.parts) {
+          for (var a=0; a < this.dragknob.parts.length; ++a) {
+            if (this.dragknob.top)
+              this.dragknob.parts[a].style.top = this.dragknob.parts[a].offsetTop + (iEvt.clientY - this.dragknob.prevY);
+            if (this.dragknob.left)
+              this.dragknob.parts[a].style.left = this.dragknob.parts[a].offsetLeft + (iEvt.clientX - this.dragknob.prevX);
+          }
+          this.dragknob.prevX = iEvt.clientX;
+          this.dragknob.prevY = iEvt.clientY;
+        } else {
+          if (this.dragknob.top)
+            this.dragknob.part.style.top = iEvt.clientY - this.dragknob.deltaY +'px';
+          if (this.dragknob.left)
+            this.dragknob.part.style.left  = iEvt.clientX - this.dragknob.deltaX +'px';
+          if (this.dragknob.height)
+            this.dragknob.part.style.height = iEvt.clientY - this.dragknob.deltaY +'px';
+          if (this.dragknob.width)
+            this.dragknob.part.style.width = iEvt.clientX - this.dragknob.deltaX +'px';
+        }
+        return true;
+      }
+      return false;
+
+    case 'mouseup':
+      if (this.dragPage) {
+        this.dragPage.dragbox.style.display = null;
+        this.addContent(this.currEditor, this.dragPage);
+        this.selectEditor('');
+        this.dragPage = null;
+        return true;
+      } else if (this.dragknob) {
+        if (this.dragknob.parts) {
+          for (var a=0; a < this.dragknob.parts.length; ++a)
+            this.setDimensions(this.dragknob.parts[a]);
+        } else {
+          this.setDimensions(this.dragknob.part);
+        }
+        this.dragknob = null;
+        return true;
+      }
+      return false;
+
+    }
+    return false; // draghandle expects return value
+  }
+
+} ; // pgEdit
+
+// firefox 3.0 .innerHTML misparses <tag/> elements
+
