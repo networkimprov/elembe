@@ -2,16 +2,28 @@ Software for Little Magic Boxes (stay tuned).
 
 A Node.js application http://github.com/ry/node for Linux
 
-Place socket.io in elembe directory http://github.com/LearnBoost/Socket.IO
+Requires socket.io in elembe directory http://github.com/LearnBoost/Socket.IO
 
 Requires these node modules:
-node-inotify http://github.com/c4milo/node-inotify
-node-sqlite http://github.com/networkimprov/node-sqlite
-uuidjs http://github.com/weaver/uuidjs
-gm http://github.com/aheckmann/gm
-socket.io-node http://github.com/LearnBoost/Socket.IO-node
+  node-inotify http://github.com/c4milo/node-inotify
+  node-sqlite http://github.com/networkimprov/node-sqlite
+  uuidjs http://github.com/weaver/uuidjs
+  gm http://github.com/aheckmann/gm
+  socket.io-node http://github.com/LearnBoost/Socket.IO-node
 
-Requires Samba http://samba.org/
+Requires these libraries:
+  SQLite
+  libuuid
+  Graphicsmagick
 
-Requires AppLaunch https://addons.mozilla.org/en-US/firefox/addon/240637/
+Requires Samba file server http://samba.org/
+  configure a share called sqltest on elembe/sqltest/
+
+Requires Firefox browser http://mozilla.org/
+
+Requires AppLaunch Firefox extension https://addons.mozilla.org/en-US/firefox/addon/240637/
+
+Start with
+  $ node elembe.js
+Point Firefox to http://yourhost:8000/
 

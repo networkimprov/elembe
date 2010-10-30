@@ -1,4 +1,4 @@
-require.paths.unshift('/home/liam/work/anvl');
+require.paths.unshift('/home/liam/work/node-lib');
 
 var sys = require('sys');
 var fs = require('fs');
@@ -7,9 +7,9 @@ var url = require('url');
 var child = require('child_process');
 var Buffer = require('buffer').Buffer;
 
-var sqlite = require('node-sqlite/sqlite3_bindings');
+var sqlite = require('node-sqlite');
 var io = require('socket.io-node');
-var uuid = require('uuidjs/uuid');
+var uuid = require('uuidjs');
 var gm = require('gm');
 var inotify = require('node-inotify');
 
