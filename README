@@ -1,0 +1,17 @@
+Software for Little Magic Boxes (stay tuned).
+
+A Node.js application http://github.com/ry/node for Linux
+
+Place socket.io in elembe directory http://github.com/LearnBoost/Socket.IO
+
+Requires these node modules:
+node-inotify http://github.com/c4milo/node-inotify
+node-sqlite http://github.com/networkimprov/node-sqlite
+uuidjs http://github.com/weaver/uuidjs
+gm http://github.com/aheckmann/gm
+socket.io-node http://github.com/LearnBoost/Socket.IO-node
+
+Requires Samba http://samba.org/
+
+Requires AppLaunch https://addons.mozilla.org/en-US/firefox/addon/240637/
+
