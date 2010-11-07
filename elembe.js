@@ -267,14 +267,13 @@ var sFileMap = {
   '/':'client/_suae_.html',
   '/socket-io.js':'socket.io/socket.io.js',
   '/test':'dbtest.html',
-  '/part':sMainDir
+  '/part':''
 };
 var sTypeMap = { js:'text/javascript', css:'text/css', html:'text/html' };
 
 function httpRequest(req, res) {
   var aUrl = url.parse(req.url, true), aFile = sFileMap[aUrl.pathname];
-  if (aFile === sMainDir) {
-    aFile += aUrl.query.oid.slice(0, aUrl.query.oid.indexOf('.')) +'/'+ aUrl.query.oid;
+  if (aFile === '') {
     if (req.method.toLowerCase() === 'post') {
       req.setEncoding('binary');
       var aBuf = new Buffer(+req.headers['content-length']);
@@ -294,6 +293,7 @@ function httpRequest(req, res) {
         sProjects.queueRequest({type:'writePart', client:null, project:aUrl.query.project, page:aUrl.query.page, part:aUrl.query.oid, data:aBuf, response:res});
       });
     } else {
+      aFile = aUrl.query.oid.indexOf('_') < 0 ? getPath(aUrl.query.oid) : sRevisionCache+aUrl.query.oid;
       fs.stat(aFile+'.w', function(errW, stats) {
         fs.stat(aFile, function(err, stats) {
           if (!errW)
@@ -1170,16 +1170,11 @@ Project.prototype = {
             });
             return;
           }
-          fs.readFile(getPath(iData.layout[idx].oid), 'utf8', function(fileErr, data) {
-            if (fileErr && fileErr.errno !== process.ENOENT) throw fileErr;
-            iData.layout[idx].oid = iReq.revision+'_'+iData.layout[idx].oid;
-            if (fileErr)
-              aCompleteCache(++idx);
-            else
-              fs.writeFile(sRevisionCache+iData.layout[idx].oid, data, 'utf8', function(fileErr) {
-                if (fileErr) throw fileErr;
-                aCompleteCache(++idx);
-              });
+          var aOrig = getPath(iData.layout[idx].oid);
+          iData.layout[idx].oid = iReq.revision+'_'+iData.layout[idx].oid;
+          dupFile(aOrig, sRevisionCache+iData.layout[idx].oid, function(err) {
+            if (err && err.errno !== process.ENOENT) throw err;
+            aCompleteCache(++idx);
           });
         };
         aCompleteCache(0);
@@ -1196,27 +1191,36 @@ Project.prototype = {
       that.stmt.getDiff.bind(1, row.oid);
       var aPtFn = function() {
         for (var aPt in aMap.page[iReq.page].part) {
-          var aRevCopy = sRevisionCache+iReq.revision+'_'+aPt;
-          fs.stat(aRevCopy, function(err, stats) {
-            if (err) {
-              fs.readFile(getPath(aPt), 'utf8', function(fileErr, data) { //. need a buffered method
-                if (fileErr) throw fileErr;
-                fs.writeFile(aRevCopy, data, 'utf8', function(fileErr) {
-                  if (fileErr) throw fileErr;
-                  aPtFn();
-                });
+          for (var a=0; a < iData.layout.length && iData.layout[a].oid !== aPt; ++a) {}
+          if (a < iData.layout.length)
+            iData.layout[a].oid = iReq.revision+'_'+aPt;
+          delete aMap.page[iReq.page].part[aPt];
+          that.stmt.getDiff.bind(2, aPt);
+          that.stmt.getDiff.step(function(err, row) {
+            if (err) throw err;
+            that.stmt.getDiff.reset();
+            var aRevCopy = sRevisionCache+iReq.revision+'_'+aPt;
+            if (!row.data) {
+              fs.unlink(aRevCopy, function(err) {
+                if (err && err.errno !== process.ENOENT) throw err;
+                aPtFn();
               });
               return;
             }
-            for (var a=0; a < iData.layout.length && iData.layout[a].oid !== aPt; ++a) {}
-            if (a < iData.layout.length)
-              iData.layout[a].oid = iReq.revision+'_'+aPt;
-            delete aMap.page[iReq.page].part[aPt];
-            that.stmt.getDiff.bind(2, aPt);
-            that.stmt.getDiff.step(function(err, row) {
-              if (err) throw err;
-              that.stmt.getDiff.reset();
-              that.unpatch(aRevCopy, row.data, aPtFn);
+            fs.stat(aRevCopy, function(statErr, stats) {
+              var aC = child.spawn('./xdelta3', ['-d', '-c', '-s', statErr ? getPath(aPt) : aRevCopy]);
+              aC.stdin.end(row.data);
+              sys.pump(aC.stdout, fs.createWriteStream(aRevCopy+'.new'), noOpCallback);
+              aC.on('exit', function(code) {
+                if (code) throw 'xdelta3 exit with code '+code;
+                fs.unlink(aRevCopy, function(err) {
+                  if (err && err.errno !== process.ENOENT) throw err;
+                  fs.rename(aRevCopy+'.new', aRevCopy, function(err) {
+                    if (err) throw err;
+                    aPtFn();
+                  });
+                });
+              });
             });
           });
           return;
@@ -1254,13 +1258,6 @@ Project.prototype = {
           iOrig.layout.push(aAdd.layout[a]);
       }
       iCallback();
-    } else {                  // part
-      var aC = child.exec('patch '+(iUndo ? '--reverse ' : '--forward ')+iOrig+' -', function(err, stdout, stderr) {
-        if (err) throw err;
-        iCallback();
-      });
-      aC.stdin.write(iDiff);
-      aC.stdin.end();
     }
   } ,
 
@@ -1364,17 +1361,34 @@ Project.prototype = {
           continue;
         var aPath = makePath(aPt, true);
         fs.stat(aPath, function(statErr, stats) {
-          child.exec('diff -a '+(statErr ? '/dev/null' : aPath)+' '+aPath+'.w', function(err, stdout, stderr) {
-            if (err && err.code === 2) throw err;
+          var aInsert = function(code) {
+            if (code) throw 'xdelta exit with code '+code;
             that.stmt.insertDiff.bind(1, aPt);
             that.stmt.insertDiff.bind(2, iRev);
-            that.stmt.insertDiff.bind(3, stdout);
+            that.stmt.insertDiff.bind(3, aDiff);
             that.stmt.insertDiff.step(function(err, row) {
               if (err) throw err;
               that.stmt.insertDiff.reset();
               that._makeDiffs(iRev, iCallback);
             });
+          };
+          if (statErr) {
+            aInsert(0);
+            return;
+          }
+          var aDiff, aDiffLen = 0, aBufList = [];
+          var aC = child.spawn('./xdelta3', ['-e', '-s', aPath+'.w', aPath]);
+          aC.stdout.on('data', function(data) { aBufList.push(data); aDiffLen += data.length; });
+          aC.stdout.on('end', function() {
+            if (aBufList.length === 1) {
+              aDiff = aBufList[0];
+              return;
+            }
+            aDiff = new Buffer(aDiffLen);
+            for (var a=0, aPos=0; a < aBufList.length; aPos+=aBufList[a++].length)
+              aBufList[a].copy(aDiff, aPos, 0);
           });
+          aC.on('exit', aInsert);
         });
         that.revisionMap.page[aPg].part[aPt].done = true;
         return;

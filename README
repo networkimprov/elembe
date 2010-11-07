@@ -1,29 +1,44 @@
 Software for Little Magic Boxes (stay tuned).
 
-A Node.js application http://github.com/ry/node for Linux
+Home http://github.com/networkimprov/elembe
 
-Requires socket.io in elembe directory http://github.com/LearnBoost/Socket.IO
+--- Requirements ---
 
-Requires these node modules:
+Linux
+
+Node.js http://github.com/ry/node
+
+Node modules:
   node-inotify http://github.com/c4milo/node-inotify
   node-sqlite http://github.com/networkimprov/node-sqlite
   uuidjs http://github.com/weaver/uuidjs
   gm http://github.com/aheckmann/gm
   socket.io-node http://github.com/LearnBoost/Socket.IO-node
 
-Requires these libraries:
-  SQLite
-  libuuid
-  Graphicsmagick
+Libraries & Tools:
+  SQLite http://sqlite.org/
+  libuuid 
+  Graphicsmagick http://graphicsmagick.org/
+  Xdelta3 http://xdelta.org/
+  Socket.IO (in elembe/socket.io/) http://github.com/LearnBoost/Socket.IO
 
-Requires Samba file server http://samba.org/
-  configure a share called sqltest on elembe/sqltest/
+Samba file server http://samba.org/
+  configure a share [sqltest] path = elembe/sqltest/
 
-Requires Firefox browser http://mozilla.org/
+On Clients:
 
-Requires AppLaunch Firefox extension https://addons.mozilla.org/en-US/firefox/addon/240637/
+Firefox (currently) http://mozilla.org/
 
-Start with
-  $ node elembe.js
+AppLaunch Firefox extension https://addons.mozilla.org/en-US/firefox/addon/240637/
+
+--- Startup ---
+
+$ node autogen.js
+$ node elembe.js autogen
+$ node elembe.js
 Point Firefox to http://yourhost:8000/
+
+--- License ---
+
+http://www.gnu.org/licenses/agpl-3.0.html
 
