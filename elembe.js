@@ -1,4 +1,4 @@
-require.paths.unshift('/home/liam/work/node-lib');
+require.paths.unshift('/usr/lib/nodelib');
 
 var sys = require('sys');
 var fs = require('fs');
@@ -1208,7 +1208,7 @@ Project.prototype = {
               return;
             }
             fs.stat(aRevCopy, function(statErr, stats) {
-              var aC = child.spawn('./xdelta3', ['-d', '-c', '-s', statErr ? getPath(aPt) : aRevCopy]);
+              var aC = child.spawn('xdelta3', ['-d', '-c', '-s', statErr ? getPath(aPt) : aRevCopy]);
               aC.stdin.end(row.data);
               sys.pump(aC.stdout, fs.createWriteStream(aRevCopy+'.new'), noOpCallback);
               aC.on('exit', function(code) {
@@ -1377,7 +1377,7 @@ Project.prototype = {
             return;
           }
           var aDiff, aDiffLen = 0, aBufList = [];
-          var aC = child.spawn('./xdelta3', ['-e', '-s', aPath+'.w', aPath]);
+          var aC = child.spawn('xdelta3', ['-e', '-s', aPath+'.w', aPath]);
           aC.stdout.on('data', function(data) { aBufList.push(data); aDiffLen += data.length; });
           aC.stdout.on('end', function() {
             if (aBufList.length === 1) {
