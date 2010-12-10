@@ -7,11 +7,11 @@ var url = require('url');
 var child = require('child_process');
 var Buffer = require('buffer').Buffer;
 
-var sqlite = require('node-sqlite');
-var io = require('socket.io-node');
+var sqlite = require('sqlite');
+var io = require('socket.io');
 var uuid = require('uuidjs');
 var gm = require('gm');
-var inotify = require('node-inotify');
+var inotify = require('inotify');
 
 var schema = {
   instance: {
