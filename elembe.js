@@ -232,12 +232,9 @@ function main() {
       aDb.close();
       sProjects.init(function() {
         if (aAutogen) {
-          fs.readFile('autogen.json', 'utf8', function(fileErr, data) {
-            if (fileErr) throw fileErr;
-            sProjects.autogen(JSON.parse(data), function() {
-              sys.puts('autogen complete');
-              sProjects.finalize();
-            });
+          sProjects.autogen(require('./autogen'), function() {
+            sys.puts('autogen complete');
+            sProjects.finalize();
           });
           return;
         }

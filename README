@@ -33,8 +33,7 @@ AppLaunch Firefox extension https://addons.mozilla.org/en-US/firefox/addon/24063
 
 --- Startup ---
 
-$ node autogen.js
-$ node elembe.js autogen
+$ node elembe.js autogen # first time only
 $ node elembe.js
 Point Firefox to http://yourhost:8000/
 

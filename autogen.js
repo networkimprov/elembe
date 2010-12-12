@@ -1,8 +1,7 @@
-var fs = require('fs');
 
 var kToday = (new Date).toISOString();
 
-kData = [
+module.exports = [
 
 {project:'#autogen.01000', list:[
 
@@ -155,13 +154,4 @@ This is an <a href="http://w3c.org/">HTML</a> part.'
 
 ];
 
-var aString = JSON.stringify(kData);
-
-fs.writeFile('autogen.json', aString, 'utf8', function(err) {
-  if (err) throw err;
-  fs.readFile('autogen.json', 'utf8', function(err, data) {
-    if (err) throw err;
-    JSON.parse(data);
-  });
-});
 
