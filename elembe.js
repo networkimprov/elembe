@@ -12,12 +12,23 @@ var io = require('socket.io');
 var uuid = require('uuidjs');
 var gm = require('gm');
 var inotify = require('inotify');
+var MqClient = require('mqclient');
 
 var schema = {
   instance: {
     instance: {
       uuid: 'text',
       rowid: 'integer primary key autoincrement, check (uuid IS NULL OR rowid = 1)'
+    }
+  },
+  services: {
+    service: {
+      host: 'text unique', // domain name
+      password: 'text',
+      joined: 'text',
+      aliases: 'text', // json [ string, ... ]
+      comment: 'text',
+      newreg: 'integer'
     }
   },
   projects: {
@@ -174,6 +185,16 @@ function dupFile(iSrc, iDst, iCallback) {
   });
 }
 
+function syncFile(iPath, iCallback) {
+  fs.open(iPath, 'r', function(err, fd) {
+    if (err) return iCallback(err);
+    fs.fsync(fd, function(err) {
+      fs.close(fd);
+      iCallback(err);
+    });
+  });
+}
+
 function Queue() {
   this.list = {};
   this.firstI = 0;
@@ -200,6 +221,8 @@ Queue.prototype = {
 var sMainDir = 'sqltest/';
 var sRevisionCache = sMainDir+'#revisioncache/';
 var sEditCache = sMainDir+'#editcache/';
+var sSendDir = sMainDir+'#outbound/';
+var sUUId;
 
 var Inotify = inotify.Inotify;
 
@@ -208,16 +231,17 @@ function main() {
   aUuid = aAutogen ? '#autogen' : uuid.generate();
 
   if (aAutogen) {
-    try {
     var aMask = process.umask(0000);
+    try {
     fs.mkdirSync(sMainDir, 0711);
+    } catch (err) {
+      if (err.errno !== process.EEXIST) throw err;
+      throw new Error("can't autogen over existing data");
+    }
     fs.mkdirSync(sRevisionCache, 0777);
     fs.mkdirSync(sEditCache, 0777);
+    fs.mkdirSync(sSendDir, 0711);
     process.umask(aMask);
-    } catch (err) {
-      if (err && err.errno !== process.EEXIST)
-        throw err;
-    }
   } else {
     sAttachments.init();
   }
@@ -227,23 +251,42 @@ function main() {
     if (openErr) throw openErr;
     var aSchemaSql = createSchema(schema);
     if (!aAutogen)
-      aSchemaSql += "INSERT OR IGNORE INTO instance (uuid) VALUES ('"+aUuid+"')";
-    dbExec(aDb, aSchemaSql, noOpCallback, function() {
+      aSchemaSql += "INSERT OR IGNORE INTO instance (uuid) VALUES ('"+aUuid+"'); SELECT uuid FROM instance;";
+    dbExec(aDb, aSchemaSql, function(err, row) {
+      if (err) throw err;
+      if (row)
+        sUUId = row.uuid;
+    }, function() {
       aDb.close();
       sProjects.init(function() {
         if (aAutogen) {
-          sProjects.autogen(require('./autogen'), function() {
-            sys.puts('autogen complete');
+          function aLoop(iArray, iN) {
+            if (iN < iArray.length) {
+              sProjects.projectGen(iArray[iN], function() {
+                sProjects.importJso(iArray[iN], null, false, function() {
+                  aLoop(iArray, ++iN);
+                });
+              });
+              return;
+            }
+            console.log('autogen complete');
             sProjects.finalize();
-          });
+          }
+          aLoop(require('./autogen'), 0);
           return;
         }
+        sServices.start();
         aServer = http.createServer(httpRequest);
         aServer.listen(8000);
         var aSocket = io.listen(aServer);
         aSocket.on('connection', function(client) {
           var aClientId = client.request.headers.cookie.slice(client.request.headers.cookie.indexOf('=')+1);
+          var aOn = true;
           client.on('message', function(msg) {
+            if (!aOn) {
+              console.log('message received on closed connection');
+              return;
+            }
             var aReq = JSON.parse(msg);
             if (aReq.constructor === Array)
               aReq = JSON.parse(aReq[0]);
@@ -252,7 +295,9 @@ function main() {
             sProjects.queueRequest(aReq);
           });
           client.on('disconnect', function() {
+            aOn = false;
             sAttachments.close(aClientId);
+            sClientCache.client(aClientId, null);
           });
         });
       });
@@ -329,6 +374,234 @@ function httpRequest(req, res) {
     });
   }
 }
+
+var MqClient = require('mqclient');
+
+var sServices = {
+  db: null,
+  s: {},
+
+  start: function() {
+    var that = this;
+    that.db = new sqlite.Database();
+    that.db.open(sMainDir+'services', function(openErr) {
+      if (openErr) throw openErr;
+      dbExec(that.db, "SELECT * FROM service", function(err, row) {
+        if (err) throw err;
+        if (row)
+          that._create(row, function(svc) {
+            that._connect(svc.host);
+            sClientCache.notify(null, {type:'services', list:that.list(svc.host)});
+          });
+      }, noOpCallback);
+    });
+  } ,
+
+  end: function() {
+    //. queue disconnect if conn in use
+    for (var a in this.s) {
+      if (this.s[a].status !== 'offline' && this.s[a].status !== '?') {
+        this.s[a].status = 'signing off';
+        sClientCache.notify(null, {type:'services', list:this.list(a)});
+        this.s[a].conn.close();
+      }
+    }
+  } ,
+
+  _create: function(iRow, iCallback) {
+    if (!('queue' in iRow)) {
+      fs.readdir(sSendDir+iRow.host, function(err, array) {
+        if (err && err.errno !== process.ENOENT) throw err;
+        if (err)
+          fs.mkdirSync(sSendDir+iRow.host, 0700);
+        iRow.queue = array || [];
+        iRow.queue.sort();
+        sServices._create(iRow, iCallback);
+      });
+      return;
+    }
+    this.s[iRow.host] = iRow;
+    iRow.timer = null;
+    iRow.status = 'offline';
+    iRow.conn = new MqClient();
+    iRow.conn.on('registered', function(aliases) {
+      if (aliases !== undefined)
+        iRow.aliases = aliases;
+      var aJoined = '';
+      if (iRow.joined === 'no') {
+        iRow.joined = (new Date).toISOString();
+        aJoined = ",joined='"+iRow.joined+"'";
+        iRow.conn.login(sUUId, iRow.password);
+      }
+      iRow.newreg = 0;
+      dbExec(sServices.db, "UPDATE service SET newreg=0, aliases='"+iRow.aliases+"'"+aJoined+" WHERE host='"+iRow.host+"'", noOpCallback, function() {
+        sClientCache.notify(null, {type:'services', list:sServices.list(iRow.host)});
+      });
+    });
+    iRow.conn.on('info', function(msg) {
+      if (msg === 'ok login') {
+        iRow.status = 'online';
+        sClientCache.notify(null, {type:'services', list:sServices.list(iRow.host)});
+        if (iRow.newreg)
+          iRow.conn.register(sUUId, '', iRow.aliases);
+        sServices._sendNext(iRow.host);
+      } else if (/^reg fail/.test(msg)) {
+        iRow.conn.login(sUUId, iRow.password);
+      }
+    });
+    iRow.conn.on('quit', function(msg) {
+      if (iRow.timer)
+        clearTimeout(iRow.timer);
+      iRow.status = 'quit: '+msg;
+      sClientCache.notify(null, {type:'services', list:sServices.list(iRow.host)});
+      console.log('service quit: '+iRow.host+' '+msg);
+    });
+    iRow.conn.on('deliver', function(id, from, msg, etc) {
+      var aImport = JSON.parse(msg.toString('ascii', 0, etc.importLen));
+      var aData = msg.slice(etc.importLen, msg.length);
+      sProjects.projectGen(aImport, function(isNew) {
+        sProjects.importJso(aImport, aData, !isNew, function() {
+          iRow.conn.ack(id, 'ok');
+          if (isNew)
+            sClientCache.notify(null, aImport.list[0]);
+        });
+      });
+    });
+    iRow.conn.on('ack', function(id, type) {
+      if (type !== 'ok')
+        return;
+      if (iRow.queue.length && id === iRow.queue[0]) {
+        if (iRow.timer)
+          clearTimeout(iRow.timer);
+        iRow.queue.shift();
+        sServices._sendNext(iRow.host);
+        fs.unlink(sSendDir+iRow.host+'/'+id, noOpCallback);
+      }
+    });
+    iRow.conn.on('close', function() {
+      iRow.status = 'offline';
+      if (iRow.timer) {
+        clearTimeout(iRow.timer);
+        iRow.timer = null;
+      }
+      sClientCache.notify(null, {type:'services', list:sServices.list(iRow.host)});
+    });
+    iCallback(iRow);
+  } ,
+
+  _connect: function(iHost) {
+    var aS = this.s[iHost];
+    aS.status = 'trying';
+    aS.conn.connect('ws://'+iHost+'/', function() {
+      if (aS.joined === 'no')
+        aS.conn.register(sUUId, aS.password, aS.aliases);
+      else
+        aS.conn.login(sUUId, aS.password);
+    });
+  } ,
+
+  _sendNext: function(iHost) {
+    if (!this.s[iHost].queue.length)
+      return;
+    var aId = this.s[iHost].queue[0];
+    fs.readFile(sSendDir+iHost+'/'+aId, function(err, data) {
+      if (err) throw err;
+      sServices.s[iHost].conn.send(data);
+      sServices.s[iHost].timer = setTimeout(sServices._timeout, 20*1000, iHost);
+    });
+  } ,
+
+  _timeout: function(iHost) {
+    sServices.s[iHost].timer = null;
+    sServices._sendNext(iHost);
+  } ,
+
+  touch: function(iHost, iAliases, iComment, iReq) {
+    var that = this;
+    if (!(iHost in this.s)) {
+      var aPass = uuid.generate();
+      dbExec(that.db, "INSERT INTO service VALUES ('"+iHost+"', '"+aPass+"', 'no', NULL, NULL, 0)", noOpCallback, function() {
+        that._create({ host:iHost, password:aPass, joined:'no', aliases:null, comment:null, newreg:0 }, function(svc) {
+          that._connect(iHost);
+          that.touch(iHost, iAliases, iComment, iReq);
+        });
+      });
+      return;
+    }
+    if (!that.stmtSave) {
+      that.db.prepare("UPDATE service SET newreg=1, aliases=?, comment=? WHERE host = ?", function(err, stmt) {
+        if (err) throw err;
+        that.stmtSave = stmt;
+        that.touch(iHost, iAliases, iComment, iReq);
+      });
+      return;
+    }
+    this.s[iHost].newreg = 1;
+    this.s[iHost].aliases = iAliases;
+    this.s[iHost].comment = iComment;
+    that.stmtSave.bind(1, this.s[iHost].aliases);
+    that.stmtSave.bind(2, this.s[iHost].comment);
+    that.stmtSave.bind(3, this.s[iHost].host);
+    that.stmtSave.step(function(err, row) {
+      if (err) throw err;
+      that.stmtSave.reset();
+      if (that.s[iHost].status === 'online')
+        that.s[iHost].conn.register(sUUId, '', that.s[iHost].aliases);
+      sClientCache.notify(iReq, {type:'services', list:that.list(iHost)});
+    });
+  } ,
+
+  list: function(iHost) {
+    var aSvc = {};
+    for (var a in this.s) {
+      if (iHost && iHost !== a)
+        continue;
+      var aS = this.s[a];
+      aSvc[a] = { host:aS.host, joined:aS.joined, aliases:aS.aliases, comment:aS.comment, status:aS.status };
+    }
+    return aSvc;
+  } ,
+
+  hasAlias: function(iHost, iStr) {
+    var aAls = this.s[iHost].aliases;
+    if (!aAls)
+      return false;
+    var aI = aAls.indexOf(iStr);
+    if (aI < 0 || aI > 0 && aAls.charAt(aI-1) !== ' ' || aI+iStr.length < aAls.length && aAls.charAt(aI+iStr.length) !== ' ')
+      return false;
+    return true;
+  } ,
+
+  queue: function(iHost, iTo, iEtc, iMsg, iCallback) {
+    var aOp = typeof iTo === 'string' ? 'ping' : 'post';
+    if (aOp === 'post') {
+      for (var a in iTo) break;
+      if (!a) {
+        process.nextTick(iCallback);
+        return;
+      }
+    }
+    var aId = Date.now().toString(); //. may need to append counter
+    var aHead = {op:aOp, id:aId, etc:iEtc};
+    aHead[aOp === 'ping' ? 'alias' : 'to'] = iTo;
+    var aMsg = MqClient.packMsg(aHead, iMsg);
+    var aFile = sSendDir+iHost+'/'+aId;
+    fs.writeFile(aFile, aMsg, function(err) {
+      if (err) throw err;
+      sServices.s[iHost].queue.push(aId);
+      if (sServices.s[iHost].queue.length === 1)
+        sServices._sendNext(iHost);
+      syncFile(aFile, function(err) {
+        if (err) throw err;
+        syncFile(sSendDir+iHost, function(err) {
+          if (err) throw err;
+          iCallback();
+        });
+      });
+    });
+  }
+
+}; // sServices
 
 var sAttachments = {
   open: {},
@@ -457,7 +730,7 @@ var sProjects = {
   newSql: "\
     BEGIN TRANSACTION;\
     "+kIncrOid+";\
-    INSERT INTO project VALUES ( ("+kNewOid+"), NULL, NULL, '{\"name\":\"Untitled\", \"blurb\":\"something\", \"created\":\"' || datetime('now') || '\"}' );\
+    INSERT INTO project VALUES ( ("+kNewOid+"), '', NULL, '{\"name\":\"Untitled\", \"blurb\":\"something\", \"created\":\"' || datetime('now') || '\"}' );\
     SELECT oid, dataw AS data, service FROM project WHERE rowid = last_insert_rowid();\
     COMMIT TRANSACTION;",
   pj: { },
@@ -522,44 +795,45 @@ var sProjects = {
     });
   } ,
 
-  autogen: function(iJso, iCallback, iN) {
-    var that = this;
-    if (typeof iN === 'undefined') {
-      that.db.prepare("INSERT OR IGNORE INTO project VALUES ( ?, NULL, NULL, NULL )", function(prepErr, stmt) {
-        if (prepErr) throw prepErr;
-        that.stmt.autogen = stmt;
-        that.autogen(iJso, iCallback, 0);
-      });
-      return;
-    } else if (iN >= iJso.length) {
-      iCallback();
+  projectGen: function(iJso, iCallback) {
+    if (iJso.source !== 'new' && iJso.source !== 'autogen') {
+      process.nextTick(iCallback);
       return;
     }
-    that.stmt.autogen.bind(1, iJso[iN].project);
-    that.stmt.autogen.step(function(stepErr, row) {
+    var that = this;
+    if (!that.stmt.projectGen) {
+      that.db.prepare("INSERT OR IGNORE INTO project VALUES ( ?, NULL, NULL, NULL )", function(prepErr, stmt) {
+        if (prepErr) throw prepErr;
+        that.stmt.projectGen = stmt;
+        that.projectGen(iJso, iCallback);
+      });
+      return;
+    }
+    that.stmt.projectGen.bind(1, iJso.project);
+    that.stmt.projectGen.step(function(stepErr, row) {
       if (stepErr) throw stepErr;
-      that.stmt.autogen.reset();
-      var aPath = makePath(iJso[iN].project);
+      that.stmt.projectGen.reset();
+      var aPath = makePath(iJso.project);
       var aDb = new sqlite.Database();
       aDb.open(aPath, function(openErr) {
         if (openErr) throw openErr;
         dbExec(aDb, createSchema(Project.prototype.schema, aPath), noOpCallback, function() {
           aDb.close();
-          that.importJso(iJso[iN], function() {
-            that.autogen(iJso, iCallback, ++iN);
-          });
+          iCallback(true);
         });
       });
     });
   } ,
 
-  importJso: function(iJso, iCallback, iN) {
+  importJso: function(iJso, iData, iNotify, iCallback, iN) {
     var that = this;
     if (typeof iN === 'undefined') {
+      if (iNotify)
+        iNotify = [];
       if (iJso.project)
         var aAttach = "ATTACH '"+makePath(iJso.project)+"' AS db; BEGIN TRANSACTION;";
       dbExec(this.db, aAttach || "BEGIN TRANSACTION", noOpCallback, function() {
-        that.importJso(iJso, iCallback, 0);
+        that.importJso(iJso, iData, iNotify, iCallback, 0);
       });
       return;
     } else if (iN >= iJso.list.length) {
@@ -570,7 +844,11 @@ var sProjects = {
       }
       if (iJso.project)
         var aDetach = "COMMIT TRANSACTION; DETACH db;";
-      dbExec(this.db, aDetach || "COMMIT TRANSACTION", noOpCallback, iCallback);
+      dbExec(this.db, aDetach || "COMMIT TRANSACTION", noOpCallback, function() {
+        if (iNotify && iNotify.length)
+          sClientCache.notify(null, iNotify, iJso.project);
+        iCallback();
+      });
       return;
     }
 
@@ -580,7 +858,7 @@ var sProjects = {
         that.db.prepare("UPDATE project SET data = ? WHERE oid = ?", function(prepErr, stmt) {
           if (prepErr) throw prepErr;
           that.stmt.importProject = stmt;
-          that.importJso(iJso, iCallback, iN);
+          that.importJso(iJso, iData, iNotify, iCallback, iN);
         });
         return;
       }
@@ -589,8 +867,9 @@ var sProjects = {
       that.stmt.importProject.step(function(stepErr, row) {
         if (stepErr) throw stepErr;
         that.stmt.importProject.reset();
-        // notify clients
-        that.importJso(iJso, iCallback, ++iN);
+        if (iNotify)
+          iNotify.push(iJso.list[iN]);
+        that.importJso(iJso, iData, iNotify, iCallback, ++iN);
       });
       return;
     case 'page':
@@ -600,7 +879,7 @@ var sProjects = {
         that.db.prepare("INSERT OR REPLACE INTO db.page VALUES ( ?, ?, NULL, ?, NULL )", function(prepErr, stmt) {
           if (prepErr) throw prepErr;
           that.stmtImport.page = stmt;
-          that.importJso(iJso, iCallback, iN);
+          that.importJso(iJso, iData, iNotify, iCallback, iN);
         });
         return;
       }
@@ -610,19 +889,25 @@ var sProjects = {
       that.stmtImport.page.step(function(stepErr, row) {
         if (stepErr) throw stepErr;
         that.stmtImport.page.reset();
-        // notify project subscribers
-        that.importJso(iJso, iCallback, ++iN);
+        if (iNotify)
+          iNotify.push(iJso.list[iN]);
+        that.importJso(iJso, iData, iNotify, iCallback, ++iN);
       });
       return;
     case 'part':
+      if (iNotify) throw new Error('part included in import');
       fs.writeFile(makePath(iJso.list[iN].oid), iJso.list[iN].data, 'utf8', function(fileErr) {
         if (fileErr) throw fileErr;
-        that.importJso(iJso, iCallback, ++iN);
+        that.importJso(iJso, iData, iNotify, iCallback, ++iN);
       });
       return;
+    case 'useralias':
+      break;
+    case 'userid':
+      break;
     default:
-      sys.puts('unknown import type: '+iJso.list[iN].type);
-      that.importJso(iJso, iCallback, ++iN);
+      console.log('unknown import type: '+iJso.list[iN].type);
+      that.importJso(iJso, iData, iNotify, iCallback, ++iN);
       return;
     }
   } ,
@@ -652,11 +937,12 @@ var sProjects = {
       if (row)
         aProj = row;
     }, function() {
-      sProjects.pj[aProj.oid] = new Project(aProj.oid, function () {
+      sProjects.pj[aProj.oid] = new Project(aProj, function () {
         sClientCache.project(iReq.client, aProj.oid);
         aProj.data = JSON.parse(aProj.data);
+        delete aProj.service;
         aProj.type = 'project';
-        sClientCache.update(iReq, {type:'update', list:[aProj]});
+        sClientCache.notify(iReq, aProj);
       });
     });
   } ,
@@ -669,21 +955,31 @@ var sProjects = {
     });
   } ,
 
-  validOid: function(iOid, iCallback) {
+  subscribeServices: {},
+  handle_subscribeServices: function(iReq) {
+    sRespond(iReq, {data:sServices.list()});
+  } ,
+
+  touchService: { host:true, aliases:true, comment:true },
+  handle_touchService: function(iReq) {
+    sServices.touch(iReq.host, iReq.aliases, iReq.comment, iReq);
+  } ,
+
+  lookup: function(iOid, iCallback) {
     var that = this;
-    if (!that.stmt.validOid) {
-      that.db.prepare("SELECT oid FROM project WHERE oid = ?", function(prepErr, stmt) {
+    if (!that.stmt.lookup) {
+      that.db.prepare("SELECT oid, service FROM project WHERE oid = ?", function(prepErr, stmt) {
         if (prepErr) throw prepErr;
-        that.stmt.validOid = stmt;
-        that.validOid(iOid, iCallback);
+        that.stmt.lookup = stmt;
+        that.lookup(iOid, iCallback);
       });
       return;
     }
-    that.stmt.validOid.bind(1, iOid);
-    that.stmt.validOid.step(function(err, row) {
+    that.stmt.lookup.bind(1, iOid);
+    that.stmt.lookup.step(function(err, row) {
       if (err) throw err;
-      that.stmt.validOid.reset();
-      iCallback(!!row);
+      that.stmt.lookup.reset();
+      iCallback(row);
     });
   } ,
 
@@ -705,9 +1001,9 @@ var sProjects = {
     if (!aReq)
       return;
     if (aReq.project && !this.pj[aReq.project]) {
-      this.validOid(aReq.project, function(ok) {
-        if (ok) {
-          sProjects.pj[aReq.project] = new Project(aReq.project, function() {
+      this.lookup(aReq.project, function(data) {
+        if (data) {
+          sProjects.pj[aReq.project] = new Project(data, function() {
             sProjects.processQueue(aReq.project, true);
           });
           sProjects.pj[aReq.project].queue.post(aReq);
@@ -752,16 +1048,16 @@ var sProjects = {
 
 } // sProjects
 
-function Project(iName, iCallback) {
-  this.oid = iName;
+function Project(iRecord, iCallback) {
+  this.oid = iRecord.oid;
+  this.service = iRecord.service;
   this.revisionMap = null;
-  this.db = null;
   this.stmt = {};
   this.db = new sqlite.Database();
   this.queue = new Queue;
 
   var that = this;
-  var aPath = makePath(iName);
+  var aPath = makePath(iRecord.oid);
   that.db.open(aPath, function(openErr) {
     if (openErr) throw openErr;
     var aSchemaSql = createSchema(that.schema, aPath);
@@ -780,7 +1076,7 @@ function Project(iName, iCallback) {
       that.db.prepare("INSERT OR REPLACE INTO clientstate VALUES ( ?, ? )", function(prepErr, stmt) {
         if (prepErr) throw prepErr;
         that.stmt.setState = stmt;
-        if (/^#autogen/.test(iName)) {
+        if (/^#autogen/.test(iRecord.oid)) {
           that.queue.next();
           iCallback();
           return;
@@ -847,7 +1143,7 @@ Project.prototype = {
       },
       member: {
         uid: 'text unique',
-        name: 'text',
+        alias: 'text unique',
         joined: 'text'     // iso/utc time
       },
       clientstate: {
@@ -855,6 +1151,24 @@ Project.prototype = {
         state: 'text'      // json { ... }
       }
     }
+  } ,
+
+  getMembers: function(iCallback) {
+    var that = this;
+    if (!that.stmt.members) {
+      that.db.prepare("SELECT uid FROM member WHERE uid IS NOT NULL AND uid != '"+sUUId+"'", function(err, stmt) {
+        if (err) throw err;
+        that.stmt.members = stmt;
+        that.getMembers(iCallback);
+      });
+      return;
+    }
+    dbResults(that.stmt.members, function(array) {
+      var aToList = {};
+      for (var a=0; a < array.length; ++a)
+        aToList[array[a].uid] = true;
+      iCallback(aToList);
+    });
   } ,
 
   postMsg: { msg:true },
@@ -879,7 +1193,7 @@ Project.prototype = {
           aMsg = row;
       }, function() {
         aMsg.type = 'message';
-        sClientCache.update(iReq, {type:'update', project:that.oid, list:[aMsg]}, that.oid);
+        sClientCache.notify(iReq, aMsg, that.oid);
       });
     });
   } ,
@@ -912,24 +1226,69 @@ Project.prototype = {
     });
   } ,
 
-  addMember: { autogen:true, uid:true, name:true },
+  setService: { autogen:true, service:true },
+  handle_setService: function(iReq) {
+    var that = this;
+    dbExec(that.db, "UPDATE projects.project SET service = '"+iReq.service+"' WHERE oid = '"+that.oid+"'", noOpCallback, function() {
+      that.service = iReq.service;
+      sClientCache.notify(iReq, {type:'setservice', service:iReq.service}, that.oid);
+    });
+  } ,
+
+  setUseralias: { autogen:true, alias:true },
+  handle_setUseralias: function(iReq) {
+    var that = this;
+    that.getMembers(function(list) {
+      var aUpdt = { type:'memberAlias', project:that.oid, alias:iReq.alias, uid:sUUId };
+      sServices.queue(that.service, list, aUpdt, null, function() {
+        dbExec(that.db, "INSERT OR REPLACE INTO member VALUES ( '"+sUUId+"', '"+iReq.alias+"', datetime('now') )", noOpCallback, function() {
+          sClientCache.notify(iReq, {type:'setuseralias', alias:iReq.alias}, that.oid);
+        });
+      });
+    });
+  } ,
+
+  addMember: { autogen:true, alias:true },
   handle_addMember: function(iReq) {
     var that = this;
     if (!that.stmt.addMember) {
-      that.db.prepare("INSERT INTO member VALUES ( ?, ?, datetime('now') )", function(prepErr, stmt) {
+      that.db.prepare("INSERT INTO member VALUES ( NULL, ?, ? )", function(prepErr, stmt) {
         if (prepErr) throw prepErr;
         that.stmt.addMember = stmt;
         that.handle_addMember(iReq);
       });
       return;
     }
-    that.stmt.addMember.bind(1, iReq.uid);
-    that.stmt.addMember.bind(2, iReq.name);
-    that.stmt.addMember.step(function(stepErr, row) {
-      if (stepErr) throw stepErr;
-      that.stmt.addMember.reset();
-      sRespond(iReq, {status:'ok'});
-      // notify subscribers
+    if (!that.service)
+      return sRespond(aReq, {error:'addMember requires an active service'});
+    var aUseralias;
+    dbExec(that.db, "SELECT alias FROM member WHERE uid = '"+sUUId+"'", function(err, row) {
+      if (err) throw err;
+      if (row) aUseralias = row.alias;
+    }, function() {
+      if (!aUseralias || !sServices.hasAlias(that.service, aUseralias))
+        return sRespond(aReq, {error:'addMember requires a user alias'});
+      var aAdd = { type:'memberAlias', project:that.oid, alias:iReq.alias };
+      that.getMembers(function(list) {
+        sServices.queue(that.service, list, aAdd, null, function() {
+          var aInvite = { type:'invite', date:(new Date).toISOString(), to:iReq.alias, from:aUseralias,
+                          project: { oid:that.oid, service:that.service, data:null } };
+          dbExec(that.db, "SELECT data FROM projects.project WHERE oid='"+that.oid+"'", function(err, row) {
+            if (err) throw err;
+            if (row) aInvite.project.data = JSON.parse(row.data);
+          }, function() {
+            sServices.queue(that.service, iReq.alias, aInvite, null, function() {
+              that.stmt.addMember.bind(1, iReq.alias);
+              that.stmt.addMember.bind(2, aInvite.date);
+              that.stmt.addMember.step(function(stepErr, row) {
+                if (stepErr) throw stepErr;
+                that.stmt.addMember.reset();
+                sClientCache.notify(iReq, {type:'memberalias', alias:iReq.alias, joined:aInvite.date}, that.oid);
+              });
+            });
+          });
+        });
+      });
     });
   } ,
 
@@ -940,7 +1299,7 @@ Project.prototype = {
       that.db.prepare("SELECT oid, CASE WHEN dataw IS NULL THEN data ELSE dataw END AS data FROM page", function(prepErr, stmt) {
         if (prepErr) throw prepErr;
         that.stmt.pageList = stmt;
-        that.db.prepare("SELECT * FROM member", function(prepErr, stmt) {
+        that.db.prepare("SELECT alias, joined, uid='"+sUUId+"' AS useralias FROM member", function(prepErr, stmt) {
           if (prepErr) throw prepErr
           that.stmt.memberList = stmt;
           that.db.prepare("SELECT * FROM revision WHERE oid != ' ' ORDER BY date", function(prepErr, stmt) {
@@ -960,7 +1319,7 @@ Project.prototype = {
       });
       return;
     }
-    var aResult = { };
+    var aResult = { service:that.service };
     dbResults(that.stmt.pageList, 'data', function(array) {
       aResult.page = array;
       dbResults(that.stmt.memberList, function(array) {
@@ -1007,7 +1366,7 @@ Project.prototype = {
           if (stepErr) throw stepErr;
           that.stmt.setRevisionMap.reset();
           dbExec(that.db, "COMMIT TRANSACTION", noOpCallback, function() {
-            sClientCache.update(iReq.client, {type:'update', list:[{type:'projectdata', oid:that.oid, data:iReq.data}]});
+            sClientCache.notify(iReq.client, {type:'projectdata', oid:that.oid, data:iReq.data});
             sRespond(iReq, {status:'ok'});
           });
         });
@@ -1041,7 +1400,7 @@ Project.prototype = {
           sClientCache.page(iReq.client, that.oid, aPage.oid);
           aPage.data = JSON.parse(aPage.data);
           aPage.type = 'page';
-          sClientCache.update(iReq, {type:'update', project:that.oid, list:[aPage]}, that.oid);
+          sClientCache.notify(iReq, aPage, that.oid);
         });
       });
     });
@@ -1101,7 +1460,7 @@ Project.prototype = {
           that.stmt.setRevisionMap.reset();
           dbExec(that.db, "COMMIT TRANSACTION", noOpCallback, function() {
             iReq.data.type = 'pagedata';
-            sClientCache.update(iReq.client, {type:'update', project:that.oid, list:[iReq.data]}, that.oid, !iReq.data.data && iReq.page);
+            sClientCache.notify(iReq.client, iReq.data, that.oid, !iReq.data.data && iReq.page);
             sRespond(iReq, {status:'ok'});
           });
         });
@@ -1314,8 +1673,7 @@ Project.prototype = {
         that.stmt.setRevisionMap.step(function(stepErr, row) {
           if (stepErr) throw stepErr;
           that.stmt.setRevisionMap.reset();
-          var aUpdt = {type:'update', project:that.oid, list:[{type:'part', oid:iReq.part, data:Buffer.isBuffer(iReq.data) ? null : iReq.data}]};
-          sClientCache.update(iReq.client, aUpdt, that.oid, iReq.page);
+          sClientCache.notify(iReq.client, {type:'part', oid:iReq.part, data:Buffer.isBuffer(iReq.data) ? null : iReq.data}, that.oid, iReq.page);
           sRespond(iReq, {status:'ok'});
         });
       });
@@ -1504,7 +1862,7 @@ Project.prototype = {
             dbExec(that.db, "COMMIT TRANSACTION", noOpCallback, function () {
               that._finishRevision(that.db, function() {
                 aRev.type = 'revision';
-                sClientCache.update(iReq, {type:'update', project:that.oid, list:[aRev]}, that.oid);
+                sClientCache.notify(iReq, aRev, that.oid);
               });
             });
           });
@@ -1569,26 +1927,27 @@ var sClientCache = {
     this.cl[iClient].project[iProj][iPage].current = true;
   } ,
 
-  update: function(iReqOrClient, iData, iProj, iPage) {
-    var aC = iReqOrClient && iReqOrClient.type ? iReqOrClient.client : iReqOrClient;
+  notify: function(iReqOrSkip, iData, iProj, iPage) {
+    var aMsg = { type:'update', project:iProj, list: (iData instanceof Array ? iData : [iData]) };
+    var aC = iReqOrSkip && iReqOrSkip.type ? iReqOrSkip.client : iReqOrSkip;
     for (var a in this.cl) {
       if (!iProj || this.cl[a].project[iProj] && (!iPage || this.cl[a].project[iProj][iPage])) {
         if (aC === a)
-          if (iReqOrClient.client)
-            iData.id = iReqOrClient.id;
+          if (iReqOrSkip.client)
+            aMsg.id = iReqOrSkip.id;
           else
             continue;
-        this.cl[a].connection.send(JSON.stringify(iData));
-        delete iData.id;
+        this.cl[a].connection.send(JSON.stringify(aMsg));
+        delete aMsg.id;
       }
     }
-    if (iReqOrClient && iReqOrClient.type)
-      sProjects.processQueue(iReqOrClient.project);
+    if (iReqOrSkip && iReqOrSkip.type)
+      sProjects.processQueue(iReqOrSkip.project);
   }
 
 }; // sClientCache
 
-function sRespond(iReq, iData, iNoCheck) {
+function sRespond(iReq, iData, iNoCheck) {//. avoid overlap in iData members and response members
   if (iReq.response) {
     iReq.response.writeHead(200);
     iReq.response.end(iData.error || iData.status);

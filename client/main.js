@@ -23,6 +23,8 @@ var suae = {
   touched: {},
   touchTimer: null,
 
+  services: null,
+
   log: '',
 
   hrefOid: function(iHref) { return iHref.slice(iHref.indexOf(':')+1); } ,
@@ -282,10 +284,12 @@ suae.menus = {
           <div value="tbd">Select Service</div></div></div>\
       <div class="palsubpanel" name="needsvc">\
         <div class="palhtml" name="svclink" style="top: 0pt; left: 5px;">\
-          <div value="one"><a href="suae:signup" onclick="suae.pMgr.goUser(\'#users.1\'); return false">Signup</a></div></div></div>\
+          <div value="one"><a href="suae:signup" onclick="suae.pMgr.goProj(\'#autogen.00000\', \'#autogen.00020\'); return false">Signup</a></div></div></div>\
     </div>\
-    <div class="paltext" name="newmember" style="top: 66px; left: 8px; width: 8em;">Add Member</div>\
-    <div class="palhtml" name="members" style="position: static; margin-top: 60px; width: 100%;">\
+    <div class="palmenu" name="svcalias" cellstyle="min-width:3em; height:16px;" style="top:66px; left:8px; height:16px; width:7em;">\
+      <div value=" ">Select Alias</div></div></div>\
+    <div class="paltext" name="newmember" style="top:99px; left: 8px; width: 8em;">Add Member</div>\
+    <div class="palhtml" name="members" style="position: static; margin-top: 90px; width: 100%;">\
       <div value="one"><a href="suae:try" onclick="suae.pMgr.goProj(\'#users\'); return false">One Link</a></div>\
     </div>' ,
   proj: '\
@@ -377,10 +381,22 @@ suae.pMgr = {
           for (var aP=0; aP < that.projIndex.i[aI].o.length; ++aP)
             suae.menus.nav.listSet(aName, that.projIndex.i[aI].o[aP].id, that.projIndex.i[aI].o[aP].text);
         }
-
         suae.menus.nav.showPanel('nav'+ that.navState.sort);
         suae.menus.nav.setValue('pjsort', that.navState.sort);
-        that.goHistory(that.navState.history.n -1);
+
+        suae.request({type:'subscribeServices'}, function(jso) {
+          suae.services = jso.data;
+          var aHave = false;
+          for (var a in suae.services) {
+            if (suae.services[a].joined === 'no')
+              continue;
+            suae.menus.circ.listSet('svc', a, a);
+            aHave = true;
+          }
+          suae.menus.circ.showPanel(aHave ? 'havesvc' : 'needsvc');
+
+          that.goHistory(that.navState.history.n -1);
+        });
       });
     });
   } ,
@@ -390,6 +406,31 @@ suae.pMgr = {
       return;
     for (var a=0; a < iJso.list.length; ++a) {
       switch (iJso.list[a].type) {
+      case 'services':
+        for (var aS in iJso.list[a].list) {
+          var aNewAlias = !(aS in suae.services) || suae.services[aS].aliases !== iJso.list[a].list[aS].aliases;
+          suae.services[aS] = iJso.list[a].list[aS];
+          if (suae.services[aS].joined !== 'no') {
+            suae.menus.circ.showPanel('havesvc');
+            suae.menus.circ.listSet('svc', aS, aS);
+          }
+          if (this.pjCurr.service === aS && aNewAlias)
+            this.enableMember(true);
+        }
+        var aApp = suae.lookupApp('serviceEdit');
+        if (aApp)
+          aApp.update(iJso.list[a].list);
+        break;
+      case 'setservice':
+        this.pj[iJso.project].service = iJso.list[a].service;
+        if (this.pjCurr.oid === iJso.project)
+          this.enableMember(true);
+        break;
+      case 'setuseralias':
+        this.pj[iJso.project].useralias = iJso.list[a].alias;
+        if (this.pjCurr.oid === iJso.project)
+          this.enableMember(true, true);
+        break;
       case 'invite':
         suae.indexAdd(this.inviteIndex, iJso.list[a].oid, iJso.list[a].invite);
         break;
@@ -430,16 +471,16 @@ suae.pMgr = {
           }
         }
         break;
-      case 'member':
+      case 'memberalias':
         if (this.pjCurr === this.pj[iJso.project]) {
-          this.listMember(iJso.uid);
+          this.listMember(iJso.list[a].alias);
           if (this.pjCurr.userindex.i[0].o.length === 0) {
             suae.menus.circ.setValue('send', 'send revision');
             suae.menus.circ.enable('svc', false);
           }
         }
-        suae.indexDelete(this.pj[iJso.project].userindex, iJso.uid);
-        suae.indexAdd(this.pj[iJso.project].userindex, iJso.uid, iJso);
+        suae.indexDelete(this.pj[iJso.project].userindex, iJso.list[a].alias);
+        suae.indexAdd(this.pj[iJso.project].userindex, iJso.list[a].alias, iJso.list[a]);
         break;
       case 'revision'://. need state for rev
         this.addRevision(this.pj[iJso.project], iJso.list[a]);
@@ -576,11 +617,13 @@ suae.pMgr = {
     if (!this.pj[iOid]) {
       this.pj[iOid] = {
         oid: null,
+        service: null,
+        useralias: null,
         update: {type:'write', project:iOid, data:null},
         stateUpdate: {type:'setClientState', project:iOid, data:null},
         curr: null,
         currRev: null,
-        userindex: {textsource:'name', i:[ {order:'+', source:'name', o:[]}, {order:'-', source:'added', o:[]} ]},
+        userindex: {textsource:'alias', i:[ {order:'+', source:'alias', o:[]}, {order:'-', source:'joined', o:[]} ]},
         pageindex: {textsource:'name', i:[ {order:'+', source:'name', o:[]}, {order:'-', source:'added', o:[]} ]},
         menu: this.menuTmpl.cloneNode(true),
         altPalette: suae.paletteMgr.create('', 0, 0, this),
@@ -596,11 +639,15 @@ suae.pMgr = {
       var that = this;
       suae.request({type:'subscribe', project:iOid}, function(jso) {
         that.pj[iOid].oid = iOid;
+        that.pj[iOid].service = jso.service;
         that.pj[iOid].update.data = jso.data;
         for (var a=0; a < jso.page.length; ++a)
           suae.indexAdd(that.pj[iOid].pageindex, jso.page[a].oid, jso.page[a].data);
         for (var a=0; a < jso.member.length; ++a)
-          suae.indexAdd(that.pj[iOid].userindex, jso.member[a].uid, jso.member[a]);
+          if (jso.member[a].useralias)
+            that.pj[iOid].useralias = jso.member[a].alias;
+          else
+            suae.indexAdd(that.pj[iOid].userindex, jso.member[a].alias, jso.member[a]);
         for (var a=0; a < jso.revision.length; ++a)
           that.addRevision(that.pj[iOid], jso.revision[a]);
         var aIi = that.pj[iOid].pageindex.i[0];
@@ -635,13 +682,12 @@ suae.pMgr = {
     }
     var aEditable = ! /^#autogen/.test(this.pjCurr.oid);
     suae.menus.circ.setValue('send', this.pjCurr.userindex.i[0].o.length ? 'send revision' : 'file revision');
-    suae.menus.circ.setValue('svc', aEditable ? this.pjCurr.update.data.service || 'tbd' : null);
+    suae.menus.circ.setValue('svc', aEditable ? this.pjCurr.service || 'tbd' : null);
     suae.menus.circ.enable('svc', aEditable && this.pjCurr.userindex.i[0].o.length === 0);
-    suae.menus.circ.setValue('newmember', aEditable ? 'Add Member' : '');
-    suae.menus.circ.enable('newmember', aEditable && this.pjCurr.update.data.service);
+    this.enableMember(aEditable);
     suae.menus.circ.listDelete('members', null);
     for (var a=0; a < this.pjCurr.userindex.i[0].o.length; ++a)
-      this.listUser(this.pjCurr.userindex.i[0].o[a].id);
+      this.listMember(this.pjCurr.userindex.i[0].o[a].id);
 
     this.enableEdit(aEditable && !this.pjCurr.currRev);
 
@@ -654,6 +700,23 @@ suae.pMgr = {
     var aPage = iPage || this.pjCurr.curr;
     this.pjCurr.curr = null;  // so goPage takes our order
     this.goPage(aPage, !!iPage);
+  } ,
+
+  enableMember: function(iState, iMemOnly) {
+    if (!iMemOnly) {
+      suae.menus.circ.listDelete('svcalias', null);
+      if (iState && this.pjCurr.service) {
+        var aList = suae.services[this.pjCurr.service].aliases.split(' ');
+        for (var a=0; a < aList.length; ++a) {
+          suae.menus.circ.listSet('svcalias', aList[a], aList[a]);
+          var aUseralias = aUseralias || aList[a] === this.pjCurr.useralias;
+        }
+      }
+      suae.menus.circ.setValue('svcalias', aUseralias ? this.pjCurr.useralias : null);
+      suae.menus.circ.enable('svcalias', aList && aList.length);
+    }
+    suae.menus.circ.setValue('newmember', iMemOnly || aUseralias ? 'Add Member' : '');
+    suae.menus.circ.enable('newmember', iMemOnly || aUseralias);
   } ,
 
   enableEdit: function(iState) {
@@ -805,21 +868,17 @@ suae.pMgr = {
       this.getMsgList();
       break;
     case 'svc':
-      this.pjCurr.update.data.service = iValue === 'tbd' ? '' : iValue;
-      suae.request(this.pjCurr.update, function(jso) {
-        if (jso.status !== 'ok')
-          throw 'paletteEvent svc: unexpected result';
-        suae.menus.circ.setValue('newmember', 'Add Member');//.call on update
-        suae.menus.circ.enable('newmember', iValue !== 'tbd');
-      });
+      var aUpdt = { type:'setService', project:this.pjCurr.oid, service: iValue === 'tbd' ? '' : iValue };
+      suae.request(aUpdt, function() { });
+      break;
+    case 'svcalias':
+      suae.request({type:'setUseralias', project:this.pjCurr.oid, alias:iValue}, function(){});
       break;
     case 'newmember':
-      suae.menus.circ.setValue('newmember', 'Add Member');
-      if (!suae.indexFind(this.pjCurr.userindex, iValue))
-        suae.request({type:'addMember', project:this.pjCurr.oid, uid:iValue}, function(jso) {
-          if (jso.status !== 'ok')
-            throw 'addMember(): unexpected result';
-        });
+      var aDespaced = iValue.replace(/ /g, '');
+      suae.menus.circ.setValue('newmember', iValue === aDespaced ? 'Add Member' : aDespaced);
+      if (iValue === aDespaced && !suae.indexFind(this.pjCurr.userindex, iValue))
+        suae.request({type:'addMember', project:this.pjCurr.oid, alias:iValue}, function() { });
       break;
     case 'pjsort':
       suae.menus.nav.showPanel('nav'+iValue);
@@ -1051,7 +1110,7 @@ suae.pMgr = {
     iPage.screen.firstChild.firstChild.appendChild(aDiv);
 
     var aReq = iPartJso.outofband ? '/part?oid='+iPartJso.oid+'&project='+this.pjCurr.oid+'&page='+iPage.pgid :
-      iPage.pgid.indexOf('_') >= 0 ? null : {type:'writePart', project:this.pjCurr.oid, page:iPage.pgid, part:iPartJso.oid, data:null};
+      iPage.pgid.indexOf('_') >= 0 || !iPartJso.oid ? null : {type:'writePart', project:this.pjCurr.oid, page:iPage.pgid, part:iPartJso.oid, data:null};
     try {
     aApp.open(iPage.pgid, iPartJso.pid, aDiv.firstChild, iPage.state.part[iPartJso.pid] || {type:'part', oid:iPartJso.pid}, aReq, iPartJso.metadata);
     } catch (aEr) {
@@ -1072,6 +1131,10 @@ suae.pMgr = {
       }
     }
 
+    --iPage.loadCount;
+
+    if (!iPartJso.oid)
+      return;
     if (!this.pjCurr.part[iPartJso.oid])
       this.pjCurr.part[iPartJso.oid] = { data:iPartJso.outofband?true:null, instance:{} };
     this.pjCurr.part[iPartJso.oid].instance[iPage.pgid+'|'+iPartJso.pid] = aApp;
@@ -1082,7 +1145,6 @@ suae.pMgr = {
         this.postMsg('App error: '+aApp.kAppName+'.update() '+aEr);
       }
     }
-    --iPage.loadCount;
   } ,
 
   placePartById: function(iPgId, iPtId) {
@@ -1112,14 +1174,15 @@ suae.pMgr = {
     }
   } ,
 
-  sizePart: function(iDiv, iWidth, iHeight) {
+  sizePart: function(iDiv, iWidth, iHeight, iNoSave) {
     if (iDiv.parentNode.className !== 'part')
       throw 'pgEdit.sizePart(): element is not a part';
     if (iWidth !== '')
       iDiv.parentNode.style.width = iWidth;
     if (iHeight !== '')
       iDiv.parentNode.style.height = iHeight;
-    this.setDimensions(iDiv.parentNode);
+    if (!iNoSave)
+      this.setDimensions(iDiv.parentNode);
   } ,
 
   placeGroup: function(iPage, iGroup, iPartDiv) {
