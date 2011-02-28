@@ -36,18 +36,17 @@ var schema = {
       oid: 'text unique',
       service: 'text',
       data: 'text',  // json { name, blurb, created }
-      dataw: 'text'
-    }
-  },
-  invites: {
+      dataw: 'text',
+      localData: 'text' // json { lastViewed:datetime } 
+    },
     invite: {
-      oid: 'text unique',
-      name: 'text',
       date: 'text',   // iso/utc time
-      blurb: 'text',
-      fromId: 'text',
-      fromName: 'text',
-      service: 'text'
+      toAlias: 'text',
+      fromAlias: 'text',
+      oid: 'text unique',
+      service: 'text',
+      data: 'text',  // json
+      accept: 'text' // iso/utc time
     }
   },
   clients: {
@@ -260,29 +259,21 @@ function main() {
       aDb.close();
       sProjects.init(function() {
         if (aAutogen) {
-          function aLoop(iArray, iN) {
-            if (iN < iArray.length) {
-              sProjects.projectGen(iArray[iN], function() {
-                sProjects.importJso(iArray[iN], null, false, function() {
-                  aLoop(iArray, ++iN);
-                });
-              });
-              return;
-            }
+          sProjects.autogen(require('./autogen'), function() {
             console.log('autogen complete');
             sProjects.finalize();
-          }
-          aLoop(require('./autogen'), 0);
+          });
           return;
         }
         sServices.start();
         aServer = http.createServer(httpRequest);
         aServer.listen(8000);
         var aSocket = io.listen(aServer);
-        aSocket.on('connection', function(client) {
-          var aClientId = client.request.headers.cookie.slice(client.request.headers.cookie.indexOf('=')+1);
+        aSocket.on('connection', function(conn) {
+          var aClientId = conn.request.headers.cookie.slice(conn.request.headers.cookie.indexOf('=')+1);
+          sClientCache.client(aClientId, conn);
           var aOn = true;
-          client.on('message', function(msg) {
+          conn.on('message', function(msg) {
             if (!aOn) {
               console.log('message received on closed connection');
               return;
@@ -290,11 +281,11 @@ function main() {
             var aReq = JSON.parse(msg);
             if (aReq.constructor === Array)
               aReq = JSON.parse(aReq[0]);
-            aReq.connection = client;
+            aReq.connection = conn;
             aReq.client = aClientId;
             sProjects.queueRequest(aReq);
           });
-          client.on('disconnect', function() {
+          conn.on('disconnect', function() {
             aOn = false;
             sAttachments.close(aClientId);
             sClientCache.client(aClientId, null);
@@ -422,6 +413,7 @@ var sServices = {
     }
     this.s[iRow.host] = iRow;
     iRow.timer = null;
+    iRow.msgHead = null;
     iRow.status = 'offline';
     iRow.conn = new MqClient();
     iRow.conn.on('registered', function(aliases) {
@@ -457,22 +449,30 @@ var sServices = {
       console.log('service quit: '+iRow.host+' '+msg);
     });
     iRow.conn.on('deliver', function(id, from, msg, etc) {
-      var aImport = JSON.parse(msg.toString('ascii', 0, etc.importLen));
-      var aData = msg.slice(etc.importLen, msg.length);
-      sProjects.projectGen(aImport, function(isNew) {
-        sProjects.importJso(aImport, aData, !isNew, function() {
-          iRow.conn.ack(id, 'ok');
-          if (isNew)
-            sClientCache.notify(null, aImport.list[0]);
-        });
-      });
+      var aData = typeof msg === 'undefined' ? null : msg;
+      var aReq = {type:etc.project ? 'projectImport' : 'importt', client:null, project:etc.project, from:from, jso:etc, data:aData, callback:function() { iRow.conn.ack(id, 'ok') } };
+      sProjects.queueRequest(aReq);
     });
     iRow.conn.on('ack', function(id, type) {
-      if (type !== 'ok')
+      if (!iRow.queue.length || id !== iRow.queue[0])
         return;
-      if (iRow.queue.length && id === iRow.queue[0]) {
-        if (iRow.timer)
-          clearTimeout(iRow.timer);
+      if (iRow.timer)
+        clearTimeout(iRow.timer);
+      var aCallbacks = 1;
+      if (iRow.msgHead.etc && iRow.msgHead.etc.type === 'invite') {
+        if (type !== 'ok') {
+          ++aCallbacks;
+          sProjects.queueRequest({type:'postMsg', client:null, project:iRow.msgHead.etc.oid, msg:'Invited user '+iRow.msgHead.alias+' is unknown', callback:aOk});
+        }
+        sProjects.queueRequest({type:'projectImport', client:null, project:iRow.msgHead.etc.oid, from:sUUId, data:null, callback:aOk,
+          jso:{type:'memberAlias', alias:iRow.msgHead.alias, invite:type === 'ok' ? 'accept' : 'invalid'}});
+        return;
+      }
+      aOk();
+      function aOk() {
+        if (--aCallbacks > 0)
+          return;
+        iRow.msgHead = null;
         iRow.queue.shift();
         sServices._sendNext(iRow.host);
         fs.unlink(sSendDir+iRow.host+'/'+id, noOpCallback);
@@ -492,7 +492,8 @@ var sServices = {
   _connect: function(iHost) {
     var aS = this.s[iHost];
     aS.status = 'trying';
-    aS.conn.connect('ws://'+iHost+'/', function() {
+    var aAddr = iHost.split(':');
+    aS.conn.connect(aAddr[0], +aAddr[1] || 80, function() {
       if (aS.joined === 'no')
         aS.conn.register(sUUId, aS.password, aS.aliases);
       else
@@ -506,6 +507,8 @@ var sServices = {
     var aId = this.s[iHost].queue[0];
     fs.readFile(sSendDir+iHost+'/'+aId, function(err, data) {
       if (err) throw err;
+      sServices.s[iHost].msgHead = MqClient.unpackMsg(data);
+      delete sServices.s[iHost].msgHead._buf;
       sServices.s[iHost].conn.send(data);
       sServices.s[iHost].timer = setTimeout(sServices._timeout, 20*1000, iHost);
     });
@@ -520,32 +523,31 @@ var sServices = {
     var that = this;
     if (!(iHost in this.s)) {
       var aPass = uuid.generate();
-      dbExec(that.db, "INSERT INTO service VALUES ('"+iHost+"', '"+aPass+"', 'no', NULL, NULL, 0)", noOpCallback, function() {
-        that._create({ host:iHost, password:aPass, joined:'no', aliases:null, comment:null, newreg:0 }, function(svc) {
-          that._connect(iHost);
+      dbExec(that.db, "INSERT INTO service VALUES ('"+iHost+"', '"+aPass+"', 'no', NULL, NULL, 2)", noOpCallback, function() {
+        that._create({ host:iHost, password:aPass, joined:'no', aliases:null, comment:null, newreg:2 }, function(svc) {
           that.touch(iHost, iAliases, iComment, iReq);
         });
       });
       return;
     }
     if (!that.stmtSave) {
-      that.db.prepare("UPDATE service SET newreg=1, aliases=?, comment=? WHERE host = ?", function(err, stmt) {
+      that.db.prepare("UPDATE service SET newreg=?, aliases=?, comment=? WHERE host = ?", function(err, stmt) {
         if (err) throw err;
         that.stmtSave = stmt;
         that.touch(iHost, iAliases, iComment, iReq);
       });
       return;
     }
-    this.s[iHost].newreg = 1;
-    this.s[iHost].aliases = iAliases;
-    this.s[iHost].comment = iComment;
-    that.stmtSave.bind(1, this.s[iHost].aliases);
-    that.stmtSave.bind(2, this.s[iHost].comment);
-    that.stmtSave.bind(3, this.s[iHost].host);
+    that.stmtSave.bind(1, this.s[iHost].newreg = +(this.s[iHost].newreg !== 2));
+    that.stmtSave.bind(2, this.s[iHost].aliases = iAliases);
+    that.stmtSave.bind(3, this.s[iHost].comment = iComment);
+    that.stmtSave.bind(4, this.s[iHost].host);
     that.stmtSave.step(function(err, row) {
       if (err) throw err;
       that.stmtSave.reset();
-      if (that.s[iHost].status === 'online')
+      if (that.s[iHost].status === 'offline')
+        that._connect(iHost);
+      else if (that.s[iHost].status === 'online')
         that.s[iHost].conn.register(sUUId, '', that.s[iHost].aliases);
       sClientCache.notify(iReq, {type:'services', list:that.list(iHost)});
     });
@@ -730,8 +732,8 @@ var sProjects = {
   newSql: "\
     BEGIN TRANSACTION;\
     "+kIncrOid+";\
-    INSERT INTO project VALUES ( ("+kNewOid+"), '', NULL, '{\"name\":\"Untitled\", \"blurb\":\"something\", \"created\":\"' || datetime('now') || '\"}' );\
-    SELECT oid, dataw AS data, service FROM project WHERE rowid = last_insert_rowid();\
+    INSERT INTO project VALUES ( ("+kNewOid+"), '', NULL, '{\"name\":\"Untitled\", \"blurb\":\"something\", \"created\":\"' || datetime('now') || '\"}', '{}' );\
+    SELECT oid, dataw AS data, service, 1 AS installed FROM project WHERE rowid = last_insert_rowid();\
     COMMIT TRANSACTION;",
   pj: { },
   stmt: {},
@@ -795,120 +797,125 @@ var sProjects = {
     });
   } ,
 
-  projectGen: function(iJso, iCallback) {
-    if (iJso.source !== 'new' && iJso.source !== 'autogen') {
-      process.nextTick(iCallback);
-      return;
-    }
-    var that = this;
-    if (!that.stmt.projectGen) {
-      that.db.prepare("INSERT OR IGNORE INTO project VALUES ( ?, NULL, NULL, NULL )", function(prepErr, stmt) {
-        if (prepErr) throw prepErr;
-        that.stmt.projectGen = stmt;
-        that.projectGen(iJso, iCallback);
-      });
-      return;
-    }
-    that.stmt.projectGen.bind(1, iJso.project);
-    that.stmt.projectGen.step(function(stepErr, row) {
-      if (stepErr) throw stepErr;
-      that.stmt.projectGen.reset();
-      var aPath = makePath(iJso.project);
+  autogen: function(iJso, iCallback, iN) {
+    if (typeof iN === 'undefined')
+      iN = 0;
+    if (iN === iJso.length)
+      return iCallback();
+    dbExec(sProjects.db, "INSERT INTO project (oid, data, localData) VALUES ( '"+iJso[iN].project+"', '"+JSON.stringify(iJso[iN].data)+"', '{}' )", noOpCallback, function() {
+      var aPath = makePath(iJso[iN].project);
       var aDb = new sqlite.Database();
-      aDb.open(aPath, function(openErr) {
-        if (openErr) throw openErr;
-        dbExec(aDb, createSchema(Project.prototype.schema, aPath), noOpCallback, function() {
-          aDb.close();
-          iCallback(true);
+      aDb.open(aPath, function(err) {
+        if (err) throw err;
+        var aSql = createSchema(Project.prototype.schema, aPath) + "BEGIN TRANSACTION;";
+        dbExec(aDb, aSql, noOpCallback, function() {
+          function aDataLoop(dataArray, dataN) {
+            if (dataN === dataArray.length) {
+              dbExec(aDb, "COMMIT TRANSACTION", noOpCallback, function() {
+                aDb.close();
+                sProjects.autogen(iJso, iCallback, ++iN);
+              });
+              return;
+            }
+            switch(dataArray[dataN].type) {
+            case 'page':
+              dbExec(aDb, "INSERT INTO page (oid, data, layout) VALUES \
+                ('"+dataArray[dataN].oid+"', '"+JSON.stringify(dataArray[dataN].data)+"', '"+JSON.stringify(dataArray[dataN].layout)+"')"
+                , noOpCallback, function() {
+                aDataLoop(dataArray, ++dataN);
+              });
+              return;
+            case 'part':
+              fs.writeFile(makePath(dataArray[dataN].oid), dataArray[dataN].data, 'utf8', function(err) {
+                if (err) throw err;
+                aDataLoop(dataArray, ++dataN);
+              });
+              return;
+            default:
+              throw new Error('unknown autogen type: '+dataArray[dataN].type);
+            }
+          }
+          aDataLoop(iJso[iN].list, 0);
         });
       });
     });
   } ,
 
-  importJso: function(iJso, iData, iNotify, iCallback, iN) {
+  importt: { from:true, jso:true, data:true },
+  handle_importt: function(iReq) {
+    // this function must defend against attack
+    // anyone on the service can send a message here with the user's alias
     var that = this;
-    if (typeof iN === 'undefined') {
-      if (iNotify)
-        iNotify = [];
-      if (iJso.project)
-        var aAttach = "ATTACH '"+makePath(iJso.project)+"' AS db; BEGIN TRANSACTION;";
-      dbExec(this.db, aAttach || "BEGIN TRANSACTION", noOpCallback, function() {
-        that.importJso(iJso, iData, iNotify, iCallback, 0);
-      });
-      return;
-    } else if (iN >= iJso.list.length) {
-      if (that.stmtImport) {
-        for (var a in that.stmtImport)
-          that.stmtImport[a].finalize();
-        delete that.stmtImport;
+    switch(iReq.jso.type) {
+    case 'invite':
+      if (!that.stmt.importInvite) {
+        that.db.prepare("INSERT OR REPLACE INTO invite VALUES ( ?, ?, ?, ?, ?, ?, NULL )", function(err, stmt) {
+          if (err) throw err;
+          that.stmt.importInvite = stmt;
+          that.handle_importt(iReq);
+        });
+        return;
       }
-      if (iJso.project)
-        var aDetach = "COMMIT TRANSACTION; DETACH db;";
-      dbExec(this.db, aDetach || "COMMIT TRANSACTION", noOpCallback, function() {
-        if (iNotify && iNotify.length)
-          sClientCache.notify(null, iNotify, iJso.project);
-        iCallback();
+      that.stmt.importInvite.bind(1, iReq.jso.date);
+      that.stmt.importInvite.bind(2, iReq.jso.toAlias);
+      that.stmt.importInvite.bind(3, iReq.jso.fromAlias);
+      that.stmt.importInvite.bind(4, iReq.jso.oid);
+      that.stmt.importInvite.bind(5, iReq.jso.service);
+      that.stmt.importInvite.bind(6, iReq.jso.data);
+      that.stmt.importInvite.step(function(err, row) {
+        if (err) throw err;
+        that.stmt.importInvite.reset();
+        iReq.jso.data = JSON.parse(iReq.jso.data);
+        sClientCache.notify(iReq, iReq.jso);
       });
       return;
-    }
-
-    switch(iJso.list[iN].type) {
     case 'project':
       if (!that.stmt.importProject) {
-        that.db.prepare("UPDATE project SET data = ? WHERE oid = ?", function(prepErr, stmt) {
-          if (prepErr) throw prepErr;
+        that.db.prepare("INSERT INTO project VALUES ( ?, ?, ?, NULL, NULL )", function(err, stmt) {
+          if (err) throw err;
           that.stmt.importProject = stmt;
-          that.importJso(iJso, iData, iNotify, iCallback, iN);
+          that.handle_importt(iReq);
         });
         return;
       }
-      that.stmt.importProject.bind(1, JSON.stringify(iJso.list[iN].data));
-      that.stmt.importProject.bind(2, iJso.list[iN].oid);
-      that.stmt.importProject.step(function(stepErr, row) {
-        if (stepErr) throw stepErr;
-        that.stmt.importProject.reset();
-        if (iNotify)
-          iNotify.push(iJso.list[iN]);
-        that.importJso(iJso, iData, iNotify, iCallback, ++iN);
+      var aFiles = iReq.jso.filemap;
+      var aOk = false;
+      dbExec(that.db, "SELECT accept FROM invite  WHERE oid = '"+aFiles[0].oid+"';\
+                       SELECT oid    FROM project WHERE oid = '"+aFiles[0].oid+"';", function(err, row) {
+        if (err) throw err;
+        if (row)
+          if (row.accept) aOk = true;
+          else if (row.oid) aOk = false;
+      }, function() {
+        if (!aOk) {
+          sRespond(iReq, {});
+          return;
+        }
+        var aOff = 0;
+        function aFileLoop(fileN) {
+          if (fileN < aFiles.length) {
+            fs.writeFile(makePath(aFiles[fileN].oid), iReq.data.slice(aOff, aOff+aFiles[fileN].size), function(err) {
+              if (err) throw err;
+              aOff += aFiles[fileN].size;
+              aFileLoop(++fileN);
+            });
+            return;
+          }
+          that.stmt.importProject.bind(1, iReq.jso.oid);
+          that.stmt.importProject.bind(2, iReq.jso.service);
+          that.stmt.importProject.bind(3, iReq.jso.data);
+          that.stmt.importProject.step(function(err, row) {
+            if (err) throw err;
+            that.stmt.importProject.reset();
+            delete iReq.jso.filemap;
+            sRespond(iReq, {});
+          });
+        }
+        aFileLoop(0);
       });
       return;
-    case 'page':
-      if (!that.stmtImport)
-          that.stmtImport = {};
-      if (!that.stmtImport.page) {
-        that.db.prepare("INSERT OR REPLACE INTO db.page VALUES ( ?, ?, NULL, ?, NULL )", function(prepErr, stmt) {
-          if (prepErr) throw prepErr;
-          that.stmtImport.page = stmt;
-          that.importJso(iJso, iData, iNotify, iCallback, iN);
-        });
-        return;
-      }
-      that.stmtImport.page.bind(1, iJso.list[iN].oid);
-      that.stmtImport.page.bind(2, JSON.stringify(iJso.list[iN].data));
-      that.stmtImport.page.bind(3, JSON.stringify(iJso.list[iN].layout));
-      that.stmtImport.page.step(function(stepErr, row) {
-        if (stepErr) throw stepErr;
-        that.stmtImport.page.reset();
-        if (iNotify)
-          iNotify.push(iJso.list[iN]);
-        that.importJso(iJso, iData, iNotify, iCallback, ++iN);
-      });
-      return;
-    case 'part':
-      if (iNotify) throw new Error('part included in import');
-      fs.writeFile(makePath(iJso.list[iN].oid), iJso.list[iN].data, 'utf8', function(fileErr) {
-        if (fileErr) throw fileErr;
-        that.importJso(iJso, iData, iNotify, iCallback, ++iN);
-      });
-      return;
-    case 'useralias':
-      break;
-    case 'userid':
-      break;
     default:
-      console.log('unknown import type: '+iJso.list[iN].type);
-      that.importJso(iJso, iData, iNotify, iCallback, ++iN);
-      return;
+      throw new Error('unknown import type: '+iReq.jso.type);
     }
   } ,
 
@@ -916,7 +923,7 @@ var sProjects = {
   handle_getList: function(iReq) {
     var that = this;
     if (!that.stmt.getList) {
-      that.db.prepare("SELECT oid, service, CASE WHEN dataw IS NULL THEN data ELSE dataw END AS data FROM project", function(prepErr, stmt) {
+      that.db.prepare("SELECT oid, service, CASE WHEN dataw IS NULL THEN data ELSE dataw END AS data FROM project WHERE localData NOT NULL", function(prepErr, stmt) {
         if (prepErr) throw prepErr;
         that.stmt.getList = stmt;
         that.handle_getList(iReq);
@@ -925,7 +932,45 @@ var sProjects = {
     }
     dbResults(that.stmt.getList, 'data', function(array) {
       sRespond(iReq, {list:array});
-      sClientCache.client(iReq.client, iReq.connection);
+    });
+  } ,
+
+  getInvites: {},
+  handle_getInvites: function(iReq) {
+    var that = this;
+    if (!that.stmt.getInvites) {
+      that.db.prepare("SELECT * FROM invite", function(err, stmt) {
+        if (err) throw err;
+        that.stmt.getInvites = stmt;
+        that.handle_getInvites(iReq);
+      });
+      return;
+    }
+    dbResults(that.stmt.getInvites, 'data', function(array) {
+      sRespond(iReq, {list:array});
+    });
+  } ,
+
+  acceptInvite: { oid:true, service:true, to:true, alias:true },
+  handle_acceptInvite: function(iReq) {
+    var that = this;
+    if (!that.stmt.acceptInvite) {
+      that.db.prepare("UPDATE invite SET accept = ? WHERE oid = ?", function(err, stmt) {
+        if (err) throw err;
+        that.stmt.acceptInvite = stmt;
+        that.handle_acceptInvite(iReq);
+      });
+      return;
+    }
+    sServices.queue(iReq.service, iReq.to, {type:'acceptInvite', project:iReq.oid, uid:sUUId, alias:iReq.alias}, null, function() {
+      var aDate = (new Date).toISOString();
+      that.stmt.acceptInvite.bind(1, aDate);
+      that.stmt.acceptInvite.bind(2, iReq.oid);
+      that.stmt.acceptInvite.step(function(err, row) {
+        if (err) throw err;
+        that.stmt.acceptInvite.reset();
+        sClientCache.notify(iReq, {type:'acceptinvite', oid:iReq.oid, accept:aDate});
+      });
     });
   } ,
 
@@ -934,8 +979,7 @@ var sProjects = {
     var aProj;
     dbExec(this.db, this.newSql, function(err, row) {
       if (err) throw err;
-      if (row)
-        aProj = row;
+      if (row) aProj = row;
     }, function() {
       sProjects.pj[aProj.oid] = new Project(aProj, function () {
         sClientCache.project(iReq.client, aProj.oid);
@@ -968,7 +1012,7 @@ var sProjects = {
   lookup: function(iOid, iCallback) {
     var that = this;
     if (!that.stmt.lookup) {
-      that.db.prepare("SELECT oid, service FROM project WHERE oid = ?", function(prepErr, stmt) {
+      that.db.prepare("SELECT oid, service, localData NOT NULL AS installed FROM project WHERE oid = ?", function(prepErr, stmt) {
         if (prepErr) throw prepErr;
         that.stmt.lookup = stmt;
         that.lookup(iOid, iCallback);
@@ -1051,6 +1095,7 @@ var sProjects = {
 function Project(iRecord, iCallback) {
   this.oid = iRecord.oid;
   this.service = iRecord.service;
+  this.installed = iRecord.installed;
   this.revisionMap = null;
   this.stmt = {};
   this.db = new sqlite.Database();
@@ -1095,7 +1140,7 @@ function Project(iRecord, iCallback) {
             that.revisionMap = aRevisionPending;
             that._finishRevision(that.db, aDoneCall);
           } else {
-            dbExec(that.db, "INSERT OR IGNORE INTO revision (oid) VALUES (' '); SELECT map FROM revision WHERE oid = ' ';", function(err, row) {
+            dbExec(that.db, "INSERT OR IGNORE INTO revision (oid, map) VALUES (' ', '"+that.revisionMapJson+"'); SELECT map FROM revision WHERE oid = ' ';", function(err, row) {
               if (err) throw err;
               if (row)
                 that.revisionMap = row.map ? JSON.parse(row.map) : that.revisionMapInit;
@@ -1144,7 +1189,8 @@ Project.prototype = {
       member: {
         uid: 'text unique',
         alias: 'text unique',
-        joined: 'text'     // iso/utc time
+        joined: 'text',     // iso/utc time
+        left: 'text'        // iso/utc time
       },
       clientstate: {
         client: 'text unique',    // mac addr
@@ -1153,13 +1199,159 @@ Project.prototype = {
     }
   } ,
 
-  getMembers: function(iCallback) {
+  projectImport: { autogen:true, from:true, jso:true, data:true },
+  handle_projectImport: function(iReq) {
     var that = this;
+    var aNotify = [];
+    var aList = iReq.jso instanceof Array ? iReq.jso : [iReq.jso];
+    dbExec(that.db, "BEGIN TRANSACTION", noOpCallback, function() {
+      function aLoop(loopN) {
+        if (loopN === aList.length) {
+          dbExec(that.db, "COMMIT TRANSACTION", noOpCallback, function() {
+            sClientCache.notify(iReq, aNotify, that.oid);
+          });
+          return;
+        }
+        switch(aList[loopN].type) {
+        case 'memberAlias':
+          var aMa = aList[loopN];
+          aUidstr = aMa.uid ? "'"+aMa.uid+"'" : 'NULL';
+          var aRow;
+          dbExec(that.db, "SELECT uid FROM member WHERE uid = "+aUidstr+" OR alias = '"+aMa.alias+"'", function(err, row) {
+            if (err) throw err;
+            if (row) aRow = row;
+          }, function() {
+            var aSql;
+            if (aMa.invite === 'invalid')
+              aSql = "INSERT OR REPLACE INTO member VALUES (NULL, '"+aMa.alias+"', 'invalid', 'invalid')";
+            else if (!aRow || (!aRow.uid && aMa.uid))
+              aSql = "INSERT OR REPLACE INTO member VALUES ("+aUidstr+",'"+aMa.alias+"','"+(new Date).toISOString()+"', NULL)";
+            else if (aRow.uid && aMa.alias)
+              aSql = "UPDATE member SET alias = '"+aMa.alias+"' WHERE uid = "+aUidstr;
+            else if (aRow.uid && aMa.resign)
+              aSql = "UPDATE member SET left = '"+(new Date).toISOString()+"' WHERE alias = '"+aMa.alias+"'";
+            else
+              return aCircInvite();
+            if (!that.installed)
+              aSql += ";UPDATE projects.project SET localData = '{}' WHERE oid = '"+that.oid+"';\
+                        SELECT oid, data, service FROM projects.project WHERE oid = '"+that.oid+"';";
+            else
+              aSql += ";SELECT uid, alias, joined, left FROM member WHERE alias = '"+aMa.alias+"';";
+            dbExec(that.db, aSql, function (err, row) {
+              if (err) throw err;
+              if (!row) return;
+              row.type = !that.installed ? 'project' : aMa.uid === sUUId ? 'setuseralias' : 'memberalias';
+              aNotify.push(row);
+            }, aCircInvite);
+            function aCircInvite() {
+              if (!aMa.invite || aMa.invite === 'invalid')
+                return aLoop(++loopN);
+              that.getMembers(null, function(list) {
+                sServices.queue(that.service, list, { type:'memberAlias', project:that.oid, alias:aMa.alias }, null, function() {
+                  aLoop(++loopN);
+                });
+              });
+            }
+          });
+          return;
+        case 'acceptInvite':
+          var aMember, aMsgHead;
+          dbExec(that.db, "SELECT uid, left FROM member WHERE alias = '"+aList[loopN].alias+"';\
+                           SELECT oid, service, data FROM projects.project WHERE oid = '"+that.oid+"';", function(err, row) {
+            if (err) throw err;
+            if (row)
+              if (row.oid) aMsgHead = row;
+              else         aMember = row;
+          }, function() {
+            if (!aMember || aMember.left || aMember.uid && aMember.uid !== aList[loopN].uid) {
+              console.log('got acceptInvite for invalid member: '+sys.inspect(aMember))
+              aLoop(++loopN);
+              return; //. log error
+            }
+            aMsgHead.filemap = [{oid:that.oid, size:0}];
+            var aOids = {};
+            dbExec(that.db, "SELECT layout from page", function(err, row) {
+              if (err) throw err;
+              if (!row) return;
+              var aLayout = JSON.parse(row.layout);
+              for (var a=0; a < aLayout.length; ++a)
+                if (aLayout[a].oid && !aOids[aLayout[a].oid]) {
+                  aMsgHead.filemap.push({oid:aLayout[a].oid, size:0});
+                  aOids[aLayout[a].oid] = true;
+                }
+            }, function() {
+              var aAllSize = 0;
+              function aFileLoop(fileN) {
+                if (fileN < aMsgHead.filemap.length) {
+                  fs.readFile(getPath(aMsgHead.filemap[fileN].oid), function(err, buf) {
+                    if (err) throw err;
+                    aMsgHead.filemap[fileN].size = buf;
+                    aAllSize += buf.length;
+                    aFileLoop(++fileN);
+                  });
+                  return;
+                }
+                var aAllBuf = new Buffer(aAllSize);
+                for (var a=0, aOff=0; a < aMsgHead.filemap.length; aOff += aMsgHead.filemap[a++].size) {
+                  aMsgHead.filemap[a].size.copy(aAllBuf, aOff, 0);
+                  aMsgHead.filemap[a].size = aMsgHead.filemap[a].size.length;
+                }
+                that.getMembers(sUUId, iReq.from, function(list) {
+                  var aTo = {};
+                  aTo[iReq.from] = true;
+                  aMsgHead.type = 'project';
+                  sServices.queue(that.service, aTo, aMsgHead, aAllBuf, function() {
+                    sServices.queue(that.service, list, {type:'memberAlias', project:that.oid, uid:iReq.from, alias:aList[loopN].alias}, null, function() {
+                      aLoop(++loopN);
+                    });
+                  });
+                });
+              }
+              aFileLoop(0);
+            });
+          });
+          return;
+        case 'page':
+          if (!that.stmt.importPage) {
+            that.db.prepare("INSERT OR REPLACE INTO page VALUES ( ?, ?, NULL, ?, NULL )", function(err, stmt) {
+              if (err) throw err;
+              that.stmt.importPage = stmt;
+              aLoop(loopN);
+            });
+            return;
+          }
+          that.stmt.importPage.bind(1, aList[loopN].oid);
+          that.stmt.importPage.bind(2, JSON.stringify(aList[loopN].data));
+          that.stmt.importPage.bind(3, JSON.stringify(aList[loopN].layout));
+          that.stmt.importPage.step(function(err, row) {
+            if (err) throw err;
+            that.stmt.importPage.reset();
+            aNotify.push(aList[loopN]);
+            aLoop(++loopN);
+          });
+          return;
+        case 'part':
+          fs.writeFile(makePath(aList[loopN].oid), aList[loopN].data, 'utf8', function(err) {
+            if (err) throw err;
+            aLoop(++loopN);
+          });
+          return;
+        default:
+          throw new Error('unknown import type: '+aList[loopN].type);
+        }
+      }
+      aLoop(0);
+    });
+  } ,
+
+  getMembers: function(iAppendArgs, iCallback) {
+    var that = this;
+    var argv = arguments;
     if (!that.stmt.members) {
-      that.db.prepare("SELECT uid FROM member WHERE uid IS NOT NULL AND uid != '"+sUUId+"'", function(err, stmt) {
+      that.db.prepare("SELECT uid FROM member WHERE left IS NULL AND uid NOT NULL AND uid != '"+sUUId+"'", function(err, stmt) {
         if (err) throw err;
         that.stmt.members = stmt;
-        that.getMembers(iCallback);
+        that.getMembers.apply(that, argv);
       });
       return;
     }
@@ -1167,7 +1359,10 @@ Project.prototype = {
       var aToList = {};
       for (var a=0; a < array.length; ++a)
         aToList[array[a].uid] = true;
-      iCallback(aToList);
+      for (var a=0; a < argv.length-1; ++a)
+        if (argv[a])
+          aToList[argv[a]] = true;
+      argv[argv.length-1](aToList);
     });
   } ,
 
@@ -1238,10 +1433,11 @@ Project.prototype = {
   setUseralias: { autogen:true, alias:true },
   handle_setUseralias: function(iReq) {
     var that = this;
-    that.getMembers(function(list) {
+    that.getMembers(sUUId, function(list) {
       var aUpdt = { type:'memberAlias', project:that.oid, alias:iReq.alias, uid:sUUId };
       sServices.queue(that.service, list, aUpdt, null, function() {
-        dbExec(that.db, "INSERT OR REPLACE INTO member VALUES ( '"+sUUId+"', '"+iReq.alias+"', datetime('now') )", noOpCallback, function() {
+        dbExec(that.db, "BEGIN; INSERT OR IGNORE INTO member VALUES ( '"+sUUId+"', '"+iReq.alias+"', '"+(new Date).toISOString()+"', NULL );\
+                         UPDATE member SET alias = '"+iReq.alias+"' WHERE uid = '"+sUUId+"'; COMMIT;", noOpCallback, function() {
           sClientCache.notify(iReq, {type:'setuseralias', alias:iReq.alias}, that.oid);
         });
       });
@@ -1252,7 +1448,7 @@ Project.prototype = {
   handle_addMember: function(iReq) {
     var that = this;
     if (!that.stmt.addMember) {
-      that.db.prepare("INSERT INTO member VALUES ( NULL, ?, ? )", function(prepErr, stmt) {
+      that.db.prepare("INSERT INTO member VALUES ( NULL, ?, ?, NULL )", function(prepErr, stmt) {
         if (prepErr) throw prepErr;
         that.stmt.addMember = stmt;
         that.handle_addMember(iReq);
@@ -1260,33 +1456,49 @@ Project.prototype = {
       return;
     }
     if (!that.service)
-      return sRespond(aReq, {error:'addMember requires an active service'});
+      return sRespond(iReq, {error:'addMember requires an active service'});
     var aUseralias;
     dbExec(that.db, "SELECT alias FROM member WHERE uid = '"+sUUId+"'", function(err, row) {
       if (err) throw err;
       if (row) aUseralias = row.alias;
     }, function() {
       if (!aUseralias || !sServices.hasAlias(that.service, aUseralias))
-        return sRespond(aReq, {error:'addMember requires a user alias'});
-      var aAdd = { type:'memberAlias', project:that.oid, alias:iReq.alias };
-      that.getMembers(function(list) {
-        sServices.queue(that.service, list, aAdd, null, function() {
-          var aInvite = { type:'invite', date:(new Date).toISOString(), to:iReq.alias, from:aUseralias,
-                          project: { oid:that.oid, service:that.service, data:null } };
-          dbExec(that.db, "SELECT data FROM projects.project WHERE oid='"+that.oid+"'", function(err, row) {
-            if (err) throw err;
-            if (row) aInvite.project.data = JSON.parse(row.data);
-          }, function() {
-            sServices.queue(that.service, iReq.alias, aInvite, null, function() {
-              that.stmt.addMember.bind(1, iReq.alias);
-              that.stmt.addMember.bind(2, aInvite.date);
-              that.stmt.addMember.step(function(stepErr, row) {
-                if (stepErr) throw stepErr;
-                that.stmt.addMember.reset();
-                sClientCache.notify(iReq, {type:'memberalias', alias:iReq.alias, joined:aInvite.date}, that.oid);
-              });
-            });
+        return sRespond(iReq, {error:'addMember requires a user alias'});
+      var aInvite;
+      dbExec(that.db, "SELECT service, data FROM projects.project WHERE oid='"+that.oid+"'", function(err, row) {
+        if (err) throw err;
+        if (row) aInvite = { type:'invite', date:(new Date).toISOString(), toAlias:iReq.alias, fromAlias:aUseralias,
+                             oid:that.oid, service:row.service, data:row.data };
+      }, function() {
+        if (!aInvite.data)
+          return sRespond(iReq, {error:'addMember requires a project with a revision'});
+        sServices.queue(aInvite.service, iReq.alias, aInvite, null, function() {
+          var aDate = (new Date).toISOString();
+          that.stmt.addMember.bind(1, iReq.alias);
+          that.stmt.addMember.bind(2, aDate);
+          that.stmt.addMember.step(function(stepErr, row) {
+            if (stepErr) throw stepErr;
+            that.stmt.addMember.reset();
+            sClientCache.notify(iReq, {type:'memberalias', alias:iReq.alias, uid:null, joined:aDate, left:null}, that.oid);
           });
+        });
+      });
+    });
+  } ,
+
+  resign: { autogen:true },
+  handle_resign: function(iReq) {
+    var that = this;
+    var aDel = { type:'memberAlias', project:that.oid, uid:sUUId, resign:true };
+    that.getMembers(sUUId, function(list) {
+      sServices.queue(that.service, list, aDel, null, function() {
+        var aRow;
+        dbExec(that.db, "UPDATE member SET left = 'pending' WHERE uid = '"+sUUId+"'; SELECT alias, joined, left, uid FROM member WHERE uid = '"+sUUId+"'", function(err, row) {
+          if (err) throw err;
+          if (row) aRow = row;
+        }, function() {
+          aRow.type = 'memberalias';
+          sClientCache.notify(iReq, aRow, that.oid);
         });
       });
     });
@@ -1299,7 +1511,7 @@ Project.prototype = {
       that.db.prepare("SELECT oid, CASE WHEN dataw IS NULL THEN data ELSE dataw END AS data FROM page", function(prepErr, stmt) {
         if (prepErr) throw prepErr;
         that.stmt.pageList = stmt;
-        that.db.prepare("SELECT alias, joined, uid='"+sUUId+"' AS useralias FROM member", function(prepErr, stmt) {
+        that.db.prepare("SELECT alias, joined, left, uid, uid='"+sUUId+"' AS useralias FROM member", function(prepErr, stmt) {
           if (prepErr) throw prepErr
           that.stmt.memberList = stmt;
           that.db.prepare("SELECT * FROM revision WHERE oid != ' ' ORDER BY date", function(prepErr, stmt) {
@@ -1806,6 +2018,7 @@ Project.prototype = {
   } ,
 
   revisionMapInit: {touch:null, page:{}},
+  revisionMapJson: JSON.stringify({touch:(new Date).toISOString(), page:{}}),
 
   commitRevision: { autogen:true },
   handle_commitRevision: function(iReq) {
@@ -1941,8 +2154,11 @@ var sClientCache = {
         delete aMsg.id;
       }
     }
-    if (iReqOrSkip && iReqOrSkip.type)
+    if (iReqOrSkip && iReqOrSkip.type) {
+      if (iReqOrSkip.callback)
+        iReqOrSkip.callback();
       sProjects.processQueue(iReqOrSkip.project);
+    }
   }
 
 }; // sClientCache
@@ -1959,6 +2175,10 @@ function sRespond(iReq, iData, iNoCheck) {//. avoid overlap in iData members and
     if (iReq.project)
       iData.project = iReq.project;
     iReq.connection.send(JSON.stringify(iData));
+  } else if (iReq.callback) {
+    if (iData.error)
+      throw new Error(iData.error);
+    iReq.callback();
   }
   if (!iNoCheck)
     sProjects.processQueue(iReq.project);

@@ -3,9 +3,9 @@ var kToday = (new Date).toISOString();
 
 module.exports = [
 
-{project:'#autogen.00000', source:'autogen', list:[
+{project:'#autogen.00000', data:{ name:'Config', created:kToday },
 
-{type:'project', oid:'#autogen.00000', data:{ name:'Config', created:kToday }},
+list:[
 
 {type:'page', oid:'#autogen.00010',
 data:{ name:'Invitations', added:kToday },
@@ -19,9 +19,9 @@ layout: [ { class:'serviceEdit', style:'top:40px; left:40px;', pid:'#autogen.000
 
 ]},
 
-{project:'#autogen.01000', source:'autogen', list:[
+{project:'#autogen.01000', data:{ name:'About Suae', created:kToday },
 
-{type:'project', oid:'#autogen.01000', data:{ name:'About Suae', created:kToday }},
+list:[
 
 {type:'page', oid:'#autogen.01010',
 data:{ name:' Splash', added:kToday },
@@ -101,7 +101,7 @@ data:{ name:'Tutorial', added:kToday },
 layout: [
  {class:'htmlEdit', style:'left:-1px; top:-1px; width:100%; height:2500px;', pid:'#autogen.01031', oid:'#autogen.01032'},
  {class:'textEdit', style:'left:50px; top:1100px; width:250px; height:250px;', pid:'#autogen.01033', oid:'#autogen.01034'},
- {class:'attachEdit_', style:'left:50px; top:1400px; width:250px; height:250px;', pid:'#autogen.01035', oid:'#autogen.01036'},
+ {class:'attachEdit_', style:'left:50px; top:1400px; width:250px; height:250px;', pid:'#autogen.01035', oid:'#autogen.01036', metadata:{}},
  {class:'imageEdit_', style:'left:50px; top:1700px; width:250px; height:250px;', pid:'#autogen.01037', oid:'#autogen.01038'}]
 },
 
