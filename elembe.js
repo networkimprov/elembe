@@ -1899,7 +1899,7 @@ Project.prototype = {
       aMap();
   } ,
 
-  _makeDiffs: function(iRev, iCallback) {
+  _makeDiffs: function(iRev, iBufList, iDiffList, iCallback) {
     var that = this;
     if (!that.stmt.insertDiff) {
       that.db.prepare("INSERT INTO diff VALUES ( ?, ?, ? )", function(err, stmt) {
@@ -1914,11 +1914,16 @@ Project.prototype = {
                            WHERE oid = ?", function(err, stmt) {
             if (err) throw err;
             that.stmt.resetPageData = stmt;
-            that._makeDiffs(iRev, iCallback);
+            that._makeDiffs(iRev, iBufList, iDiffList, iCallback);
           });
         });
       });
       return;
+    }
+    if (iBufList && !iCallback.count) {
+      var aFn = iCallback;
+      iCallback = function() { if (--iCallback.count === 0) aFn(); };
+      iCallback.count = 1;
     }
     for (var aPg in that.revisionMap.page) {
       if (that.revisionMap.page[aPg].done)
@@ -1926,36 +1931,51 @@ Project.prototype = {
       for (var aPt in that.revisionMap.page[aPg].part) {
         if (that.revisionMap.page[aPg].part[aPt].done)
           continue;
-        var aPath = makePath(aPt, true);
+        var aPath = getPath(aPt, true);
         fs.stat(aPath, function(statErr, stats) {
-          var aInsert = function(code) {
-            if (code) throw 'xdelta exit with code '+code;
+          if (iBufList) {
+            var aSegLen = 0;
+            ++iCallback.count;
+            var aC = child.spawn('xdelta3', statErr ? ['-e', aPath+'.w'] : ['-e', '-s', aPath, aPath+'.w']);
+            aC.stdout.on('data', function(data) {
+              iBufList.push(data);
+              aSegLen += data.length;
+            });
+            aC.on('exit', function(code) {
+              if (code) throw new Error('xdelta error: '+code);
+              iDiffList.push({oid:aPt, size:aSegLen, type:'bin'});
+              iCallback();
+            });
+          }
+          if (statErr)
+            return aInsert();
+          var aDiff = 0, aBufList = [];
+          var aC = child.spawn('xdelta3', ['-e', '-s', aPath+'.w', aPath]);
+          aC.stdout.on('data', function(data) {
+            aBufList.push(data);
+            aDiff += data.length;
+          });
+          aC.on('exit', function(code) {
+            if (code) throw new Error('xdelta error: '+code);
+            if (aBufList.length === 1) {
+              aDiff = aBufList[0];
+            } else {
+              aDiff = new Buffer(aDiff);
+              for (var a=0, aPos=0; a < aBufList.length; aPos+=aBufList[a++].length)
+                aBufList[a].copy(aDiff, aPos, 0);
+            }
+            aInsert();
+          });
+          function aInsert() {
             that.stmt.insertDiff.bind(1, aPt);
             that.stmt.insertDiff.bind(2, iRev);
             that.stmt.insertDiff.bind(3, aDiff);
             that.stmt.insertDiff.step(function(err, row) {
               if (err) throw err;
               that.stmt.insertDiff.reset();
-              that._makeDiffs(iRev, iCallback);
+              that._makeDiffs(iRev, iBufList, iDiffList, iCallback);
             });
-          };
-          if (statErr) {
-            aInsert(0);
-            return;
           }
-          var aDiff, aDiffLen = 0, aBufList = [];
-          var aC = child.spawn('xdelta3', ['-e', '-s', aPath+'.w', aPath]);
-          aC.stdout.on('data', function(data) { aBufList.push(data); aDiffLen += data.length; });
-          aC.stdout.on('end', function() {
-            if (aBufList.length === 1) {
-              aDiff = aBufList[0];
-              return;
-            }
-            aDiff = new Buffer(aDiffLen);
-            for (var a=0, aPos=0; a < aBufList.length; aPos+=aBufList[a++].length)
-              aBufList[a].copy(aDiff, aPos, 0);
-          });
-          aC.on('exit', aInsert);
         });
         that.revisionMap.page[aPg].part[aPt].done = true;
         return;
@@ -1979,9 +1999,14 @@ Project.prototype = {
               aWork.layout.splice(a, 1);
             }
           }
+          var aDiff = JSON.stringify({add:aWork, del:aOrig});
+          if (iBufList) {
+            iBufList.push(aDiff);
+            iDiffList.push({oid:aPg, size:aDiff.length, type:'txt'});
+          }
           that.stmt.insertDiff.bind(1, aPg);
           that.stmt.insertDiff.bind(2, iRev);
-          that.stmt.insertDiff.bind(3, JSON.stringify({add:aWork, del:aOrig}));
+          that.stmt.insertDiff.bind(3, aDiff);
           that.stmt.insertDiff.step(function(err, row) {
             if (err) throw err;
             that.stmt.insertDiff.reset();
@@ -1989,7 +2014,7 @@ Project.prototype = {
             that.stmt.resetPageData.step(function(err, row) {
               if (err) throw err;
               that.stmt.resetPageData.reset();
-              that._makeDiffs(iRev, iCallback);
+              that._makeDiffs(iRev, iBufList, iDiffList, iCallback);
             });
           });
         });
@@ -1997,19 +2022,22 @@ Project.prototype = {
       }
     }
     if (that.revisionMap.touch) {
+      var aDiff;
       dbExec(that.db, "SELECT data, dataw FROM projects.project WHERE oid = '"+that.oid+"'", function(err, row) {
         if (err) throw err;
-        if (row)
-          that.stmt.insertDiff.bind(3, JSON.stringify({add:JSON.parse(row.dataw), del:JSON.parse(row.data||'{}')}));
+        if (row) aDiff = JSON.stringify({add:JSON.parse(row.dataw), del:JSON.parse(row.data||'{}')});
       }, function () {
+        if (iBufList) {
+          iBufList.push(aDiff);
+          iDiffList.push({oid:that.oid, size:aDiff.length, type:'txt'});
+        }
         that.stmt.insertDiff.bind(1, that.oid);
         that.stmt.insertDiff.bind(2, iRev);
+        that.stmt.insertDiff.bind(3, aDiff);
         that.stmt.insertDiff.step(function(err, row) {
           if (err) throw err;
           that.stmt.insertDiff.reset();
-          dbExec(that.db, "UPDATE projects.project SET data = dataw, dataw = NULL WHERE oid = '"+that.oid+"'", noOpCallback, function() {
-            iCallback();
-          });
+          dbExec(that.db, "UPDATE projects.project SET data = dataw, dataw = NULL WHERE oid = '"+that.oid+"'", noOpCallback, iCallback);
         });
       });
     } else {
@@ -2057,59 +2085,75 @@ Project.prototype = {
           if (!aState[row.client])
             aState[row.client] = aSt;
         }
-      }, function() {
-        var aRevState = function() {
-          for (var aClient in aState) {
-            that.stmt.setState.bind(1, aClient);
-            that.stmt.setState.bind(2, JSON.stringify(aState[aClient]));
-            that.stmt.setState.step(function(err, row) {
-              if (err) throw err;
-              that.stmt.setState.reset();
-              aRevState();
-            });
-            // notify subscribers whose state changed
-            delete aState[aClient];
-            return;
-          }
-          that._makeDiffs(aRev.oid, function() {
+      }, aFinish);
+      function aFinish() {
+        for (var aClient in aState) {
+          that.stmt.setState.bind(1, aClient);
+          that.stmt.setState.bind(2, JSON.stringify(aState[aClient]));
+          that.stmt.setState.step(function(err, row) {
+            if (err) throw err;
+            that.stmt.setState.reset();
+            aFinish();
+          });
+          // notify subscribers whose state changed
+          delete aState[aClient];
+          return;
+        }
+        that.getMembers(null, function(list) {
+          for (var aAny in list) break;
+          var aBufList = aAny && [];
+          aRev.list = aAny && [];
+          that._makeDiffs(aRev.oid, aBufList, aRev.list, function() {
+            if (!aAny)
+              return aCommit();
+            var aRevData = 0;
+            for (var a=0; a < aRev.list.length; ++a)
+              aRevData += aRev.list[a].size;
+            aRevData = new Buffer(aRevData);
+            for (var aOff, a=0; a < aBufList.length; aOff += aBufList[a++].length) {
+              if (aBufList[a] instanceof Buffer)
+                aBufList[a].copy(aRevData, aOff, 0);
+              else
+                aRevData.write(aBufList[a], aOff);
+            }
+            aRev.type = 'revision';
+            sServices.queue(that.service, list, aRev, aRevData, aCommit);
+          });
+          function aCommit() {
             dbExec(that.db, "COMMIT TRANSACTION", noOpCallback, function () {
               that._finishRevision(that.db, function() {
-                aRev.type = 'revision';
+                delete aRev.list;
                 sClientCache.notify(iReq, aRev, that.oid);
               });
             });
-          });
-        };
-        aRevState();
-      });
+          }
+        });
+      }
     });
   } ,
 
   _finishRevision: function (iDb, iCallback) {
     var that = this;
-    var aReset = function() {
-      for (var aPg in that.revisionMap.page) {
-        for (var aPt in that.revisionMap.page[aPg].part) {
-          var aPath = getPath(aPt);
-          if (sAttachments.open[aPt])
-            dupFile(aPath+'.w', aPath, function(err) {
-              if (err) throw err;
-              aReset();
-            });
-          else
-            fs.rename(aPath+'.w', aPath, function(err) {
-              if (err && err.errno !== process.ENOENT) throw err;
-              aReset();
-            });
-          delete that.revisionMap.page[aPg].part[aPt];
-          return;
-        }
-        delete that.revisionMap.page[aPg];
+    for (var aPg in that.revisionMap.page) {
+      for (var aPt in that.revisionMap.page[aPg].part) {
+        var aPath = getPath(aPt);
+        if (sAttachments.open[aPt])
+          dupFile(aPath+'.w', aPath, function(err) {
+            if (err) throw err;
+            that._finishRevision(iDb, iCallback);
+          });
+        else
+          fs.rename(aPath+'.w', aPath, function(err) {
+            if (err && err.errno !== process.ENOENT) throw err;
+            that._finishRevision(iDb, iCallback);
+          });
+        delete that.revisionMap.page[aPg].part[aPt];
+        return;
       }
-      that.revisionMap = that.revisionMapInit;
-      dbExec(iDb, "UPDATE revision SET oid = substr(oid, 2) WHERE oid LIKE '!%'", noOpCallback, iCallback);
-    };
-    aReset();
+      delete that.revisionMap.page[aPg];
+    }
+    that.revisionMap = that.revisionMapInit;
+    dbExec(iDb, "UPDATE revision SET oid = substr(oid, 2) WHERE oid LIKE '!%'", noOpCallback, iCallback);
   }
 
 }; // Project.prototype
