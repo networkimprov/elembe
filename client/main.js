@@ -819,7 +819,8 @@ suae.pMgr = {
     this.pjCurr.currRev = iRev;
     this.enableEdit(iRev === null);
     suae.paletteMgr.closeAllExcept(this.pjCurr.revPanel);
-    this.loadPage(this.pjCurr.curr, this.pjCurr, this.pjCurr.stateUpdate.data.page[this.pjCurr.curr][iRev], iRev);
+    var aState = this.pjCurr.stateUpdate.data.page[this.pjCurr.curr];
+    this.loadPage(this.pjCurr.curr, this.pjCurr, aState && aState[iRev], iRev);
   } ,
 
   /*goUser: function(iUid) {
