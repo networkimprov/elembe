@@ -361,7 +361,8 @@ suae.pMgr = {
     <div class="pallabel" name="title" style="top:5px; left:5px;">Revision History</div>\
     <div class="palhtml" name="revcurr" style="top:25px; left:5px;">\
       <div value="link"><a href="suae:current" onclick="suae.pMgr.markRevision(null); suae.pMgr.goRev(suae.pMgr.pjCurr.curr, null); return false;">Current</a></div></div>\
-    <div class="palhtml" name="revlist" order="-" style="top:50px; left:5px;"></div>',
+    <div class="palscroll" style="top:50px; left:0; width:96%; height:550px;">\
+      <div class="palhtml" name="revlist" order="-"></div></div>',
 
   kMsgPanelSpec: '<size w="300px" h="600px"></size>\
     <div class="pallabel" name="title" style="top:5px; left:5px;">Message History</div>\
@@ -603,8 +604,8 @@ suae.pMgr = {
   markRevision: function(iDiv) {
     if (this.pjCurr.revLink) {
       this.pjCurr.revLink.style.backgroundColor = null;
-      this.pjCurr.revLink.parentNode.style.borderWidth = '1px';
-      this.pjCurr.revLink.parentNode.style.padding = '3px';
+      this.pjCurr.revLink.parentNode.style.borderWidth = null;
+      this.pjCurr.revLink.parentNode.style.padding = null;
     }
     if (iDiv) {
       iDiv.style.backgroundColor = '#ddf';

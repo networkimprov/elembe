@@ -1,5 +1,5 @@
-  .scrollbarl, .scrollbarr, .scrollbarb { position:absolute; background-color:#ddd; }
 
+  .scrollbarl, .scrollbarr, .scrollbarb { position:absolute; background-color:#ddd; }
   .scrollbtn { position:absolute; background-color:#fff; border: 2px solid #bbb; }
 
   .scrollbarl { top:0; left:0; width:16px; height:100%; }
@@ -12,9 +12,26 @@
   .scrollbarb .scrollbtn { bottom:0; left:0; height:22px; width:50%; border-bottom-style:none; }
 
 
+  .palscroll .scrollbarl, .palscroll .scrollbarr, .palscroll .scrollbarb { background-color:rgb(218,210,170); }
+  .palscroll .scrollbtn { background-color:rgb(248,240,200); border-width: 1px; border-color:#aaa; }
+
+  .palscroll .scrollbarl { width:9px; }
+  .palscroll .scrollbarl .scrollbtn { width:12px; }
+
+  .palscroll .scrollbarr { width:9px; }
+  .palscroll .scrollbarr .scrollbtn { width:12px; }
+
+  .palscroll .scrollbarb { height:9px; }
+  .palscroll .scrollbarb .scrollbtn { height:12px; }
+
+
+  .palette { position:absolute; border: 2px solid #bbb; background-color:rgb(238,230,190); font: 90% verdana;
+           min-width:4em; min-height:4em; cursor:default; overflow:hidden; z-index:1; visibility:hidden;
+           -moz-box-shadow: -5px 5px 5px rgba(190,190,190,0.8); }
+
   .palclose { position:absolute; border: 1px solid #444; top:5px; right:5px; width:10px; height:10px; }
 
-  .pallabel, .paltext, .palbutton, .palmenu, .palgrid, .palpanel, .palhtml { position:absolute; z-index:1; }
+  .pallabel, .paltext, .palbutton, .palmenu, .palgrid, .palpanel, .palhtml, .palscroll { position:absolute; z-index:1; }
 
   .palclose, .paltext, .palbutton, .palmenubtn, .palgridcell, .palgridrow { background-color:rgb(268,260,220); }
 
@@ -38,6 +55,9 @@
 
   .palhtml { width:100%; }
   .palhtmldiv { line-height:1.6em; }
+
+  .palscrollclip { overflow:hidden; margin-left:14px; height:100%; width:100%; }
+  .palscrollcontent { position:relative; }
 
   .palselect { position:absolute; border: 3px dotted #88f; z-index:0; }
 

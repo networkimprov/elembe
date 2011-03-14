@@ -15,8 +15,8 @@ suae.paletteMgr = {
 
   closeAllExcept: function(iExcept) {
     for (var a=this.base.firstChild; a; a=a.nextSibling)
-      if ((!iExcept || a !== iExcept.div) && a.style.display)
-        a.style.display = ''
+      if ((!iExcept || a !== iExcept.div) && a.style.visibility)
+        a.style.visibility = null;
   } ,
 
   create: function(iDef, iTop, iLeft, iTarget) {
@@ -30,9 +30,8 @@ suae.paletteMgr = {
     aDiv.appendChild(document.createElement('div')).className = 'palclose';
 
     this._paint(aDiv, aPal);
-
-    this._startPal(aDiv, aPal);
     this.base.appendChild(aDiv);
+    this._startPal(aDiv, aPal);
 
     return aPal;
   } ,
@@ -49,9 +48,25 @@ suae.paletteMgr = {
 
   _startPal: function(iDiv, iPal) {
     iPal.div = iDiv;
-    var aText = iDiv.getElementsByClassName('paltext');
-    for (var a=0; a < aText.length; ++a)
-      aText[a].prevVal = aText[a].value;
+
+    var aScroll = iDiv.getElementsByClassName('palscroll');
+    for (var a=0; a < aScroll.length; ++a) {
+      for (var aP=aScroll[a].parentNode; aP !== iDiv; aP=aP.parentNode)
+        if (aP.className === 'palsubpanel')
+          aP.style.display = 'block';
+      (function() {
+        var aContent = aScroll[a].firstChild.firstChild;
+        aScroll[a].scrollbar.setup(aScroll[a], suae.scrollbar.eLeft, aScroll[a].offsetHeight, function(v, h) {
+          aContent.style.top  = v +'px';
+          aContent.style.left = h +'px';
+        });
+        aScroll[a].scrollbar.objSetLen(aScroll[a].offsetHeight * 1.4);
+      })();
+      for (var aP=aScroll[a].parentNode; aP !== iDiv; aP=aP.parentNode)
+        if (aP.className === 'palsubpanel')
+          aP.style.display = null;
+      aScroll[a].addEventListener('DOMMouseScroll', iPal.evtFn, false);
+    }
 
     iDiv.addEventListener('click', iPal.evtFn, false);
     iDiv.addEventListener('keydown', iPal.evtFn, false);
@@ -93,7 +108,7 @@ suae.paletteMgr = {
       case 'paltext':
         aEl = ioDiv.insertBefore(document.createElement('input'), aEl);
         aEl.type = 'text';
-        aEl.value = aEl.nextSibling.innerHTML;
+        aEl.value = aEl.prevVal = aEl.nextSibling.innerHTML;
         for (var a=0; a < aEl.nextSibling.attributes.length; ++a)
           aEl.setAttribute(aEl.nextSibling.attributes[a].name, aEl.nextSibling.attributes[a].value);
         ioDiv.removeChild(aEl.nextSibling);
@@ -150,6 +165,16 @@ suae.paletteMgr = {
           this._paint(aP, iPal);
         }
         break;
+      case 'palscroll':
+        ioDiv.insertBefore(aEl.cloneNode(false), aEl).innerHTML = '<div class="palscrollclip"></div>';
+        aEl.previousSibling.firstChild.appendChild(aEl);
+        for (var a=aEl.attributes.length-1; a >= 0; --a)
+          aEl.removeAttributeNode(aEl.attributes[a]);
+        aEl.className = 'palscrollcontent';
+        this._paint(aEl, iPal);
+        aEl = aEl.parentNode.parentNode;
+        aEl.scrollbar = suae.scrollbar.factory();
+        break;
       default:
         throw 'paletteMgr._paint(): unknown tag '+ aEl.tagName +'.'+ aEl.className;
       }
@@ -202,7 +227,7 @@ suae.paletteMgr = {
     } ,
 
     show: function() {
-      this.div.style.display = 'block';
+      this.div.style.visibility = 'visible';
     } ,
 
     setValue: function(iName, iValue) {
@@ -343,7 +368,7 @@ suae.paletteMgr = {
       if (!aEl || aEl.className !== 'palsubpanel')
         throw 'palette.showPanel(): panel '+iName+' not found in palette';
       for (var a=aEl.parentNode.firstChild; a ; a=a.nextSibling)
-        a.style.display = a === aEl ? 'block' : '';
+        a.style.display = a === aEl ? 'block' : null;
     } ,
 
     hidePanel: function(iName) {
@@ -358,9 +383,6 @@ suae.paletteMgr = {
       switch (iEvt.target.className) {
       case 'palette': case 'pallabel': case 'palgrid': case 'palpanel': case 'palsubpanel':
         return; //. shouldn't this be blocked by handleDrag?
-      case 'palclose':
-        this.div.style.display = '';
-        return;
       }
 
       switch (iEvt.type) {
@@ -397,6 +419,9 @@ suae.paletteMgr = {
       case 'click':
         var aNameVal = iEvt.target.id.split('.', 2);
         switch(iEvt.target.className) {
+        case 'palclose':
+          this.div.style.visibility = null;
+          return;
         case 'palgridcell':
         case 'palgridrow':
           if (iEvt.target.parentNode.hasAttribute('disabled'))
@@ -433,6 +458,12 @@ suae.paletteMgr = {
         this.target.paletteEvent(this, aNameVal[1], aNameVal[2]);
         } catch (aEr) {
           suae.pMgr.postMsg('paletteEvent(): '+aEr);
+        }
+        return;
+
+      case 'DOMMouseScroll':
+        if (iEvt.detail && iEvt.currentTarget.className === 'palscroll') {
+          iEvt.currentTarget.scrollbar.objSetPos(iEvt.currentTarget.scrollbar.objPos + iEvt.detail*12);
         }
         return;
 
@@ -566,10 +597,10 @@ suae.scrollbar = {
     switch (iEvt.type) {
     case 'mousedown':
       if (iEvt.target === this.box) {
-        this.dragstart = iEvt.layerY;
+        this.dragstart = iEvt.clientY - this.box.offsetTop;
         return true;
-      } else
-        this.dragstart = NaN;
+      }
+      this.dragstart = NaN;
       aY = this.box.offsetTop + (iEvt.layerY < this.box.offsetTop ? -1 : 1) * this.box.offsetHeight;
       break;
     case 'mousemove':
