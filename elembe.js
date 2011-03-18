@@ -1251,13 +1251,15 @@ Project.prototype = {
       return;
 
     case 'acceptInvite':
-      var aMember, aMsgHead;
+      var aMember, aMsgHead, aLastRev;
       dbExec(that.db, "SELECT uid, left FROM member WHERE alias = '"+iReq.jso.alias+"';\
-                       SELECT oid, service, data FROM projects.project WHERE oid = '"+that.oid+"';", function(err, row) {
+                       SELECT oid, service, data FROM projects.project WHERE oid = '"+that.oid+"';\
+                       SELECT oid FROM revision ORDER BY rowid DESC LIMIT 1;", function(err, row) {
         if (err) throw err;
         if (row)
-          if (row.oid) aMsgHead = row;
-          else         aMember = row;
+          if      (row.uid)     aMember = row;
+          else if (row.service) aMsgHead = row;
+          else                  aLastRev = row.oid;
       }, function() {
         if (!aMember || aMember.left || aMember.uid && aMember.uid !== iReq.jso.uid) {
           console.log('got acceptInvite for invalid member: '+sys.inspect(aMember))
@@ -1298,7 +1300,7 @@ Project.prototype = {
               aTo[iReq.from] = true;
               aMsgHead.type = 'project';
               sServices.queue(that.service, aTo, aMsgHead, aAllBuf, function() {
-                sServices.queue(that.service, list, {type:'memberAlias', project:that.oid, uid:iReq.from, alias:iReq.jso.alias}, null, function() {
+                sServices.queue(that.service, list, {type:'memberAlias', project:that.oid, uid:iReq.from, alias:iReq.jso.alias, lastrev:aLastRev}, null, function() {
                   sRespond(iReq, {});
                 });
               });

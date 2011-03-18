@@ -138,7 +138,7 @@ var suae = {
     for (var a in iA) {
       if (!iA.hasOwnProperty(a))
         continue;
-      if (typeof iA[a] === 'object' && typeof iB[a] === 'object' ? !areEqual(iA[a], iB[a]) : iA[a] !== iB[a])
+      if (typeof iA[a] === 'object' && typeof iB[a] === 'object' ? !this.areEqual(iA[a], iB[a]) : iA[a] !== iB[a])
         return false;
       ++aMemberCount;
     }
@@ -1061,12 +1061,11 @@ suae.pMgr = {
     for (var a=0; a < iLayout.length; ++a) {
       for (var aPt=0; aPt < iPage.layout.length && iPage.layout[aPt].pid !== iLayout[a].pid; ++aPt) {}
       if (aPt < iPage.layout.length) {
-        if (suae.areEqual(iPage.layout[aPt], iLayout[a]))
-          iPage.layout.splice(aPt, 1);
-        else {
-          for (var aEl=iPage.screen.firstChild.firstChild.firstChild; aEl.id !== iLayout[a].pid; aEl = aEl.nextSibling) {}
+        if (!suae.areEqual(iPage.layout[aPt], iLayout[a])) {
+          for (var aEl=iPage.screen.firstChild.firstChild.firstChild; aEl.id !== iLayout[a].pid; aEl=aEl.nextSibling) {}
           aEl.setAttribute('style', iLayout[a].style);
         }
+        iPage.layout.splice(aPt, 1);
       } else {
         ++iPage.loadCount;
         if (iPage.screen.parentNode)
@@ -1074,7 +1073,7 @@ suae.pMgr = {
       }
     }
     for (var a=0; a < iPage.layout.length; ++a) {
-      var aEl = document.getElementById(iPage.layout[a].pid);
+      for (var aEl=iPage.screen.firstChild.firstChild.firstChild; aEl.id !== iPage.layout[a].pid; aEl=aEl.nextSibling) {}
       aEl.parentNode.removeChild(aEl);
       var aApp = suae.lookupApp(iPage.layout[a].class);
       try {
@@ -1084,7 +1083,7 @@ suae.pMgr = {
       }
       //. if (iPage.layout[a].oid) delete project.part[iPage.layout[a].oid].instance[iPage.pgid+'|'+iPage.layout[a].pid];
     }
-    iPage.layout = iLayout;
+    iPage.update.data.layout = iPage.layout = iLayout;
   } ,
 
   revisePage: function(iProj, iOid) {
