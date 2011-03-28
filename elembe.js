@@ -903,17 +903,27 @@ var sProjects = {
         });
         return;
       }
-      that.stmt.importInvite.bind(1, iReq.jso.date);
-      that.stmt.importInvite.bind(2, iReq.jso.toAlias);
-      that.stmt.importInvite.bind(3, iReq.jso.fromAlias);
-      that.stmt.importInvite.bind(4, iReq.jso.oid);
-      that.stmt.importInvite.bind(5, iReq.jso.service);
-      that.stmt.importInvite.bind(6, iReq.jso.data);
-      that.stmt.importInvite.step(function(err, row) {
+      var aAccept;
+      dbExec(that.db, "SELECT accept FROM invite WHERE oid = '"+iReq.jso.oid+"'", function(err, row) {
         if (err) throw err;
-        that.stmt.importInvite.reset();
-        iReq.jso.data = JSON.parse(iReq.jso.data);
-        sClientCache.notify(iReq, iReq.jso);
+        if (row) aAccept = row.accept;
+      }, function() {
+        if (aAccept) {
+          sRespond(iReq, {});
+          return;
+        }
+        that.stmt.importInvite.bind(1, iReq.jso.date);
+        that.stmt.importInvite.bind(2, iReq.jso.toAlias);
+        that.stmt.importInvite.bind(3, iReq.jso.fromAlias);
+        that.stmt.importInvite.bind(4, iReq.jso.oid);
+        that.stmt.importInvite.bind(5, iReq.jso.service);
+        that.stmt.importInvite.bind(6, iReq.jso.data);
+        that.stmt.importInvite.step(function(err, row) {
+          if (err) throw err;
+          that.stmt.importInvite.reset();
+          iReq.jso.data = JSON.parse(iReq.jso.data);
+          sClientCache.notify(iReq, iReq.jso);
+        });
       });
       return;
     case 'project':
@@ -925,14 +935,16 @@ var sProjects = {
         });
         return;
       }
+      if (!iReq.data) {
+        sRespond(iReq, {});
+        return;
+      }
       var aFiles = iReq.jso.filemap;
       var aOk = false;
       dbExec(that.db, "SELECT accept FROM invite  WHERE oid = '"+aFiles[0].oid+"';\
                        SELECT oid    FROM project WHERE oid = '"+aFiles[0].oid+"';", function(err, row) {
         if (err) throw err;
-        if (row)
-          if (row.accept) aOk = true;
-          else if (row.oid) aOk = false;
+        if (row) aOk = row.accept ? true : false;
       }, function() {
         if (!aOk) {
           sRespond(iReq, {});
@@ -1204,16 +1216,16 @@ function Project(iRecord, iCallback) {
   that.db.open(aPath, function(openErr) {
     if (openErr) throw openErr;
     var aSchemaSql = createSchema(that.schema, aPath);
-    aSchemaSql += "SELECT oid FROM page LIMIT 1;\
-      SELECT map FROM revision WHERE oid LIKE '!%';";
-    var aHasPage = false, aRevisionPending = null;
+    aSchemaSql += "SELECT 1 AS haspage FROM page LIMIT 1;\
+      SELECT oid, map FROM revision WHERE oid LIKE '!%';";
+    var aHasPage, aRevPending;
     dbExec(that.db, aSchemaSql, function(err, row) {
       if (err) throw err;
       if (row) {
-        if (row.oid)
+        if (row.haspage)
           aHasPage = true;
-        else if (row.map)
-          aRevisionPending = JSON.parse(row.map);
+        else
+          aRevPending = row;
       }
     }, function () {
       that.db.prepare("INSERT OR REPLACE INTO clientstate VALUES ( ?, ? )", function(prepErr, stmt) {
@@ -1227,9 +1239,17 @@ function Project(iRecord, iCallback) {
         that.db.prepare("UPDATE revision SET map = ? WHERE oid = ' '", function(prepErr, stmt) {
           if (prepErr) throw prepErr;
           that.stmt.setRevisionMap = stmt;
-          if (aRevisionPending) {
+          if (aRevPending) {
             that.revisionMap = that.revisionMapInit;
-            that._finishRevision(that.db, aRevisionPending, aDoneCall);
+            fs.readFile(sSendDir+aRevPending.oid.slice(1), function(err, buffer) {
+              if (err && err.errno !== process.ENOENT) throw err;
+              if (buffer) {
+                var aRevMsg = MqClient.unpackMsg(buffer);
+                var aRevBuf = aRevMsg._buf;
+                delete aRevMsg._buf;
+              }
+              that._finishRevision(that.db, JSON.parse(aRevPending.map), aRevMsg, aRevBuf, aDoneCall);
+            });
           } else {
             dbExec(that.db, "INSERT OR IGNORE INTO revision (oid, map) VALUES (' ', '"+that.revisionMapJson+"');\
                              SELECT map FROM revision WHERE oid = ' ';", function(err, row) {
@@ -1362,9 +1382,10 @@ Project.prototype = {
     case 'revision':
       if (!that.stmt.revisionDiff) {
         var aOk;
-        dbExec(that.db, "SELECT uid FROM member WHERE uid = '"+iReq.from+"'", function(err, row) {
+        dbExec(that.db, "SELECT 1 AS hasmem FROM member WHERE uid = '"+iReq.from+"';\
+                         SELECT 1 AS hasrev FROM revision WHERE oid = '"+iReq.jso.oid+"';", function(err, row) {
           if (err) throw err;
-          if (row) aOk = row;
+          if (row) aOk = row.hasmem ? true : false;
         }, function() {
           if (!aOk) {
             sRespond(iReq, {});
@@ -1465,7 +1486,7 @@ Project.prototype = {
           aNotify.push(iReq.jso);
           dbExec(that.db, "COMMIT TRANSACTION", noOpCallback, function() {
             iReq.jso.map.ext = '.new';
-            that._finishRevision(that.db, iReq.jso.map, function() {
+            that._finishRevision(that.db, iReq.jso.map, null, null, function() {
               sClientCache.notify(iReq, aNotify, that.oid);
             });
           });
@@ -1494,7 +1515,7 @@ Project.prototype = {
           if (err) throw err;
           dbExec(aDb, "BEGIN TRANSACTION;\
                        UPDATE page SET layoutw = NULL, dataw = NULL;\
-                       DELETE from revision WHERE oid = ' ';\
+                       UPDATE revision SET map = NULL WHERE oid = ' ';\
                        DELETE from message;\
                        DELETE from clientstate;\
                        COMMIT TRANSACTION;\
@@ -2239,9 +2260,8 @@ Project.prototype = {
   commitRevision: { autogen:true },
   handle_commitRevision: function(iReq) {
     if (!this.revisionMap.touch) {
-      for (var a in this.revisionMap.page)
-        break;
-      if (!a)
+      for (var any in this.revisionMap.page) break;
+      if (!any)
         return sRespond(iReq, {status:'ok'});
     }
     var aSql = "\
@@ -2255,9 +2275,9 @@ Project.prototype = {
     dbExec(that.db, aSql, function(err, row) {
       if (err) throw err;
       if (row) {
-        row.oid = row.oid.slice(1);
-        row.map = JSON.parse(row.map);
         aRev = row;
+        aRev.oid = aRev.oid.slice(1);
+        aRev.map = JSON.parse(aRev.map);
       }
     }, function () {
       var aState = {};
@@ -2306,11 +2326,14 @@ Project.prototype = {
                 aRevData.write(aBufList[a], aOff);
             }
             aRev.project = that.oid;
-            sServices.listPost(that.service, that.oid, aRev, aRevData, aCommit);
+            storeFile(sSendDir+aRev.oid, MqClient.packMsg(aRev, aRevData), function(err) {
+              if (err) throw err;
+              aCommit(aRev, aRevData);
+            });
           });
-          function aCommit() {
+          function aCommit(rev, revdata) {
             dbExec(that.db, "COMMIT TRANSACTION", noOpCallback, function () {
-              that._finishRevision(that.db, that.revisionMap, function() {
+              that._finishRevision(that.db, that.revisionMap, rev, revdata, function() {
                 that.revisionMap = that.revisionMapInit;
                 delete aRev.list;
                 sClientCache.notify(iReq, aRev, that.oid);
@@ -2322,7 +2345,7 @@ Project.prototype = {
     });
   } ,
 
-  _finishRevision: function (iDb, iMap, iCallback) {
+  _finishRevision: function (iDb, iMap, iRev, iRevData, iCallback) {
     var that = this;
     if (!iMap.ext) iMap.ext = '.w';
     for (var aPg in iMap.page) {
@@ -2331,19 +2354,31 @@ Project.prototype = {
         if (sAttachments.open[aPt])
           dupFile(aPath+iMap.ext, aPath, function(err) {
             if (err) throw err;
-            that._finishRevision(iDb, iMap, iCallback);
+            that._finishRevision(iDb, iMap, iRev, iRevData, iCallback);
           });
         else
           fs.rename(aPath+iMap.ext, aPath, function(err) {
             if (err && err.errno !== process.ENOENT) throw err;
-            that._finishRevision(iDb, iMap, iCallback);
+            syncFile(getParent(aPath), function(err) {
+              if (err) throw err;
+              that._finishRevision(iDb, iMap, iRev, iRevData, iCallback);
+            });
           });
         delete iMap.page[aPg].part[aPt];
         return;
       }
       delete iMap.page[aPg];
     }
-    dbExec(iDb, "UPDATE revision SET oid = substr(oid, 2) WHERE oid LIKE '!%'", noOpCallback, iCallback);
+    if (iRev)
+      sServices.listPost(that.service, that.oid, iRev, iRevData, function() {
+        fs.unlink(sSendDir+iRev.oid, noOpCallback);
+        aUpdate();
+      });
+    else
+      aUpdate();
+    function aUpdate() {
+      dbExec(iDb, "UPDATE revision SET oid = substr(oid, 2) WHERE oid LIKE '!%'", noOpCallback, iCallback);
+    }
   }
 
 }; // Project.prototype
