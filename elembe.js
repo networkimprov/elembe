@@ -90,6 +90,33 @@ function noOpCallback(err, etc) {
     throw err;
 }
 
+function dbPrepare(iDb, ioSet, iCallback, iAsync) {
+  for (var a in ioSet) {
+    if (typeof ioSet[a] !== 'string')
+      continue;
+    iDb.prepare(ioSet[a], function(err, stmt) {
+      if (err) return iCallback(err);
+      ioSet[a] = stmt;
+      dbPrepare(iDb, ioSet, iCallback, 1);
+    });
+    return;
+  }
+  if (!iAsync)
+    process.nextTick(iCallback);
+  else
+    iCallback();
+}
+
+function dbFinalize(ioSet) {
+  for (var a in ioSet) {
+    if (typeof ioSet[a].finalize === 'function')
+      ioSet[a].finalize();
+    else
+      dbFinalize(ioSet[a]);
+    delete ioSet[a];
+  }
+}
+
 function dbExec(db, iSql, iRowCallback, iDoneCallback) {
   db.prepare(iSql, function(prepErr, stmt) {
     if (prepErr)
@@ -798,8 +825,7 @@ var sProjects = {
   } ,
 
   finalize: function() {
-    for (var a in this.stmt)
-      this.stmt[a].finalize();
+    dbFinalize(this.stmt);
     this.db.close();
   } ,
 
@@ -896,84 +922,95 @@ var sProjects = {
     switch(iReq.jso.type) {
     case 'invite':
       if (!that.stmt.importInvite) {
-        that.db.prepare("INSERT OR REPLACE INTO invite VALUES ( ?, ?, ?, ?, ?, ?, NULL )", function(err, stmt) {
+        that.stmt.importInvite = {
+          select: "SELECT accept FROM invite WHERE oid = ?",
+          insert: "INSERT OR REPLACE INTO invite VALUES ( ?, ?, ?, ?, ?, ?, NULL )"
+        };
+        dbPrepare(that.db, that.stmt.importInvite, function(err) {
           if (err) throw err;
-          that.stmt.importInvite = stmt;
           that.handle_importt(iReq);
         });
         return;
       }
-      var aAccept;
-      dbExec(that.db, "SELECT accept FROM invite WHERE oid = '"+iReq.jso.oid+"'", function(err, row) {
+      that.stmt.importInvite.select.bind(1, iReq.jso.oid);
+      that.stmt.importInvite.select.step(function(err, row) {
         if (err) throw err;
-        if (row) aAccept = row.accept;
-      }, function() {
-        if (aAccept) {
+        that.stmt.importInvite.select.reset();
+        if (row && row.accept) {
           sRespond(iReq, {});
           return;
         }
-        that.stmt.importInvite.bind(1, iReq.jso.date);
-        that.stmt.importInvite.bind(2, iReq.jso.toAlias);
-        that.stmt.importInvite.bind(3, iReq.jso.fromAlias);
-        that.stmt.importInvite.bind(4, iReq.jso.oid);
-        that.stmt.importInvite.bind(5, iReq.jso.service);
-        that.stmt.importInvite.bind(6, iReq.jso.data);
-        that.stmt.importInvite.step(function(err, row) {
+        that.stmt.importInvite.insert.bind(1, iReq.jso.date);
+        that.stmt.importInvite.insert.bind(2, iReq.jso.toAlias);
+        that.stmt.importInvite.insert.bind(3, iReq.jso.fromAlias);
+        that.stmt.importInvite.insert.bind(4, iReq.jso.oid);
+        that.stmt.importInvite.insert.bind(5, iReq.jso.service);
+        that.stmt.importInvite.insert.bind(6, iReq.jso.data);
+        that.stmt.importInvite.insert.step(function(err, row) {
           if (err) throw err;
-          that.stmt.importInvite.reset();
+          that.stmt.importInvite.insert.reset();
           iReq.jso.data = JSON.parse(iReq.jso.data);
           sClientCache.notify(iReq, iReq.jso);
         });
       });
       return;
+
     case 'project':
       if (!that.stmt.importProject) {
-        that.db.prepare("INSERT INTO project VALUES ( ?, ?, ?, NULL, NULL )", function(err, stmt) {
+        that.stmt.importProject = {
+          selectInvite:  "SELECT accept FROM invite  WHERE oid = ?",
+          selectProject: "SELECT oid    FROM project WHERE oid = ?",
+          insert: "INSERT INTO project VALUES ( ?, ?, ?, NULL, NULL )"
+        };
+        dbPrepare(that.db, that.stmt.importProject, function(err) {
           if (err) throw err;
-          that.stmt.importProject = stmt;
           that.handle_importt(iReq);
         });
         return;
       }
-      if (!iReq.data) {
-        sRespond(iReq, {});
-        return;
-      }
-      var aFiles = iReq.jso.filemap;
-      var aOk = false;
-      dbExec(that.db, "SELECT accept FROM invite  WHERE oid = '"+aFiles[0].oid+"';\
-                       SELECT oid    FROM project WHERE oid = '"+aFiles[0].oid+"';", function(err, row) {
+      if (!iReq.data || !(iReq.jso.filemap instanceof Array))
+        return aQuit();
+      var aOff = 0, aFiles = iReq.jso.filemap;
+      that.stmt.importProject.selectInvite.bind(1, aFiles[0].oid);
+      that.stmt.importProject.selectInvite.step(function(err, row) {
         if (err) throw err;
-        if (row) aOk = row.accept ? true : false;
-      }, function() {
-        if (!aOk) {
-          sRespond(iReq, {});
+        that.stmt.importProject.selectInvite.reset();
+        if (!row || !row.accept)
+          return aQuit();
+        that.stmt.importProject.selectProject.bind(1, aFiles[0].oid);
+        that.stmt.importProject.selectProject.step(function(err, row) {
+          if (err) throw err;
+          that.stmt.importProject.selectProject.reset();
+          if (row)
+            return aQuit();
+          aFileLoop(0);
+        });
+      });
+      function aQuit() {
+        sRespond(iReq, {});
+      }
+      function aFileLoop(fileN) {
+        if (fileN < aFiles.length) {
+          fs.writeFile(makePath(aFiles[fileN].oid), iReq.data.slice(aOff, aOff+aFiles[fileN].size), function(err) {
+            if (err) throw err;
+            aOff += aFiles[fileN].size;
+            aFileLoop(++fileN);
+          });
           return;
         }
-        var aOff = 0;
-        aFileLoop(0);
-        function aFileLoop(fileN) {
-          if (fileN < aFiles.length) {
-            fs.writeFile(makePath(aFiles[fileN].oid), iReq.data.slice(aOff, aOff+aFiles[fileN].size), function(err) {
-              if (err) throw err;
-              aOff += aFiles[fileN].size;
-              aFileLoop(++fileN);
-            });
-            return;
-          }
-          that.stmt.importProject.bind(1, iReq.jso.oid);
-          that.stmt.importProject.bind(2, iReq.jso.service);
-          that.stmt.importProject.bind(3, iReq.jso.data);
-          that.stmt.importProject.step(function(err, row) {
-            if (err) throw err;
-            that.stmt.importProject.reset();
-            delete iReq.jso.filemap;
-            iReq.jso.data = JSON.parse(iReq.jso.data);
-            sClientCache.notify(iReq, iReq.jso);
-          });
-        }
-      });
+        that.stmt.importProject.insert.bind(1, iReq.jso.oid);
+        that.stmt.importProject.insert.bind(2, iReq.jso.service);
+        that.stmt.importProject.insert.bind(3, iReq.jso.data);
+        that.stmt.importProject.insert.step(function(err, row) {
+          if (err) throw err;
+          that.stmt.importProject.insert.reset();
+          delete iReq.jso.filemap;
+          iReq.jso.data = JSON.parse(iReq.jso.data);
+          sClientCache.notify(iReq, iReq.jso);
+        });
+      }
       return;
+
     default:
       console.log('unknown import type: '+iReq.jso.type);
       sRespond(iReq, {});
