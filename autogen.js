@@ -35,8 +35,8 @@ layout:[ {class:'htmlEdit', style:'left:-1px; top:-1px; width:100%; height:2500p
   <p>If you haven\'t reviewed the App Mockup on the suae website, do. It\'ll give you a much\
   clearer picture of what suae\'s about.</p>\
   <p>The current version of suae has a modest feature set, which you can walk through in this\
-  <a href="suae:#about.3" onclick="suae.pMgr.goPage(suae.hrefOid(this.href)); return false;">tutorial</a>.</p>\
-  <p>See also the <a href="suae:#about.2" onclick="suae.pMgr.goPage(suae.hrefOid(this.href)); return false;">introduction</a>.</p>\
+  <a href="suae:#autogen.01030" onclick="suae.pMgr.goPage(suae.hrefOid(this.href)); return false;">tutorial</a>.</p>\
+  <p>See also the <a href="suae:#autogen.01020" onclick="suae.pMgr.goPage(suae.hrefOid(this.href)); return false;">introduction</a>.</p>\
   </div>'
 },
 

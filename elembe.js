@@ -1330,7 +1330,8 @@ Project.prototype = {
         oid: 'text unique',       // ' ' for open revision
         author: 'text',
         date: 'text',      // iso/utc time
-        map: 'text'        // json {project:{}, page:{oid:{op:'.', touch:'', part:{oid:{op:'!', touch:''}, ...}}, ...}}
+        map: 'text',        // json {project:{}, page:{oid:{op:'.', touch:'', part:{oid:{op:'!', touch:''}, ...}}, ...}}
+        previous: 'text'   // revision oid
       },
       diff: {
         object: 'text', // oid
@@ -1438,7 +1439,12 @@ Project.prototype = {
       }
       var aNotify = [];
       dbExec(that.db, "BEGIN TRANSACTION;\
-                       INSERT INTO revision VALUES ('!"+iReq.jso.oid+"', '"+iReq.jso.author+"', '"+iReq.jso.date+"', '"+JSON.stringify(iReq.jso.map)+"');", noOpCallback, aIter);
+                       INSERT INTO revision VALUES (\
+                       '!"+iReq.jso.oid+"', \
+                       '"+iReq.jso.author+"', \
+                       '"+iReq.jso.date+"', \
+                       '"+JSON.stringify(iReq.jso.map)+"', \
+                       '"+iReq.jso.previous+"');", noOpCallback, aIter);
       function aIter(iterN, iterO) {
         if (!iterN) iterN = iterO = 0;
         if (iterN < iReq.jso.list.length) {
@@ -1572,10 +1578,14 @@ Project.prototype = {
             function aFileLoop(fileN) {
               if (fileN < aMsgHead.filemap.length) {
                 fs.readFile(getPath(aMsgHead.filemap[fileN].oid), function(err, buf) {
-                  if (err) throw err;
-                  aMsgHead.filemap[fileN].size = buf;
-                  aAllSize += buf.length;
-                  aFileLoop(++fileN);
+                  if (err && err.errno !== process.ENOENT) throw err;
+                  if (err) {
+                    aMsgHead.filemap.splice(fileN, 1);
+                  } else {
+                    aMsgHead.filemap[fileN++].size = buf;
+                    aAllSize += buf.length;
+                  }
+                  aFileLoop(fileN);
                 });
                 return;
               }
@@ -2304,7 +2314,9 @@ Project.prototype = {
     var aSql = "\
       BEGIN TRANSACTION;\
       "+kIncrOid+";\
-      INSERT INTO revision VALUES ( '!'||("+kNewOid+"), '"+sUUId+"', '"+(new Date).toISOString()+"', (SELECT map FROM revision WHERE oid = ' ') );\
+      INSERT INTO revision VALUES ( '!'||("+kNewOid+"), '"+sUUId+"', '"+(new Date).toISOString()+"',\
+        (SELECT map FROM revision WHERE oid = ' '),\
+        (SELECT oid FROM revision ORDER BY rowid DESC LIMIT 1) );\
       SELECT * FROM revision WHERE rowid = last_insert_rowid();\
       UPDATE revision SET map = NULL WHERE oid = ' ';";
     var that = this;
