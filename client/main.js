@@ -538,16 +538,20 @@ suae.pMgr = {
     case 'page':
       if (!aState.page[iJso.oid])
         aState.page[iJso.oid] = {};
-      if (!aState.page[iJso.oid][iJso.rev]);
+      if (aState.page[iJso.oid][iJso.rev] !== iJso) {
+        if (aState.page[iJso.oid][iJso.rev])
+          iJso.part = aState.page[iJso.oid][iJso.rev].part;
         aState.page[iJso.oid][iJso.rev] = iJso;
+      }
       break;
     case 'part':
+      var aRev = this.pjCurr.currRev || ' ';
       if (!aState.page[this.pjCurr.curr])
         aState.page[this.pjCurr.curr] = {};
-      if (!aState.page[this.pjCurr.curr][' '])
-        aState.page[this.pjCurr.curr][' '] = {type:'page', oid:this.pjCurr.curr, rev:' ', focus:null, scroll:{}, part:{}};
-      if (!aState.page[this.pjCurr.curr][' '].part[iJso.oid])
-        aState.page[this.pjCurr.curr][' '].part[iJso.oid] = iJso;
+      if (!aState.page[this.pjCurr.curr][aRev])
+        aState.page[this.pjCurr.curr][aRev] = {type:'page', oid:this.pjCurr.curr, rev:aRev, focus:null, scroll:{}, part:{}};
+      if (!aState.page[this.pjCurr.curr][aRev].part[iJso.oid])
+        aState.page[this.pjCurr.curr][aRev].part[iJso.oid] = iJso;
       break;
     default:
       throw 'touchState(): Unknown tag name "'+ iJso.type +'"';

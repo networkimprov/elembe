@@ -1265,43 +1265,39 @@ function Project(iRecord, iCallback) {
           aRevPending = row;
       }
     }, function () {
-      that.db.prepare("INSERT OR REPLACE INTO clientstate VALUES ( ?, ? )", function(prepErr, stmt) {
+      if (/^#autogen/.test(iRecord.oid)) {
+        that.queue.next();
+        iCallback();
+        return;
+      }
+      that.db.prepare("UPDATE revision SET map = ? WHERE oid = ' '", function(prepErr, stmt) {
         if (prepErr) throw prepErr;
-        that.stmt.setState = stmt;
-        if (/^#autogen/.test(iRecord.oid)) {
-          that.queue.next();
-          iCallback();
-          return;
+        that.stmt.setRevisionMap = stmt;
+        if (aRevPending) {
+          that.revisionMap = that.revisionMapInit;
+          fs.readFile(sSendDir+aRevPending.oid.slice(1), function(err, buffer) {
+            if (err && err.errno !== process.ENOENT) throw err;
+            if (buffer) {
+              var aRevMsg = MqClient.unpackMsg(buffer);
+              var aRevBuf = aRevMsg._buf;
+              delete aRevMsg._buf;
+            }
+            that._finishRevision(that.db, JSON.parse(aRevPending.map), aRevMsg, aRevBuf, aDoneCall);
+          });
+        } else {
+          dbExec(that.db, "INSERT OR IGNORE INTO revision (oid, map) VALUES (' ', '"+that.revisionMapJson+"');\
+                            SELECT map FROM revision WHERE oid = ' ';", function(err, row) {
+            if (err) throw err;
+            if (row) that.revisionMap = row.map ? JSON.parse(row.map) : that.revisionMapInit;
+          }, aDoneCall);
         }
-        that.db.prepare("UPDATE revision SET map = ? WHERE oid = ' '", function(prepErr, stmt) {
-          if (prepErr) throw prepErr;
-          that.stmt.setRevisionMap = stmt;
-          if (aRevPending) {
-            that.revisionMap = that.revisionMapInit;
-            fs.readFile(sSendDir+aRevPending.oid.slice(1), function(err, buffer) {
-              if (err && err.errno !== process.ENOENT) throw err;
-              if (buffer) {
-                var aRevMsg = MqClient.unpackMsg(buffer);
-                var aRevBuf = aRevMsg._buf;
-                delete aRevMsg._buf;
-              }
-              that._finishRevision(that.db, JSON.parse(aRevPending.map), aRevMsg, aRevBuf, aDoneCall);
-            });
-          } else {
-            dbExec(that.db, "INSERT OR IGNORE INTO revision (oid, map) VALUES (' ', '"+that.revisionMapJson+"');\
-                             SELECT map FROM revision WHERE oid = ' ';", function(err, row) {
-              if (err) throw err;
-              if (row) that.revisionMap = row.map ? JSON.parse(row.map) : that.revisionMapInit;
-            }, aDoneCall);
-          }
-          function aDoneCall() {
-            that.queue.next();
-            if (aHasPage)
-              iCallback();
-            else
-              that.handle_newPage(null, iCallback);
-          }
-        });
+        function aDoneCall() {
+          that.queue.next();
+          if (aHasPage)
+            iCallback();
+          else
+            that.handle_newPage(null, iCallback);
+        }
       });
     });
   });
@@ -1331,7 +1327,8 @@ Project.prototype = {
         author: 'text',
         date: 'text',      // iso/utc time
         map: 'text',        // json {project:{}, page:{oid:{op:'.', touch:'', part:{oid:{op:'!', touch:''}, ...}}, ...}}
-        previous: 'text'   // revision oid
+        previous: 'text',   // revision oid
+        sideline: 'text'
       },
       diff: {
         object: 'text', // oid
@@ -1438,13 +1435,19 @@ Project.prototype = {
         return;
       }
       var aNotify = [];
-      dbExec(that.db, "BEGIN TRANSACTION;\
-                       INSERT INTO revision VALUES (\
+      dbExec(that.db, "BEGIN TRANSACTION", noOpCallback, function() {
+        that.checkConflict(iReq.jso, function(op, partlist) {
+console.log(op, sys.inspect(partlist));
+          iReq.jso.map.page.sideline = {part:partlist||{}};
+          dbExec(that.db, "INSERT INTO revision VALUES (\
                        '!"+iReq.jso.oid+"', \
                        '"+iReq.jso.author+"', \
                        '"+iReq.jso.date+"', \
                        '"+JSON.stringify(iReq.jso.map)+"', \
-                       '"+iReq.jso.previous+"');", noOpCallback, aIter);
+                       '"+iReq.jso.previous+"', \
+                       NULL);", noOpCallback, aIter);
+        });
+      });
       function aIter(iterN, iterO) {
         if (!iterN) iterN = iterO = 0;
         if (iterN < iReq.jso.list.length) {
@@ -1480,35 +1483,42 @@ Project.prototype = {
             });
             break;
           case 'part':
-            var aPath = makePath(iReq.jso.list[iterN].oid);
-            fs.stat(aPath, function(noPath, stats) {
+            var aPath = iReq.jso.map.page.sideline.part[iReq.jso.list[iterN].oid] || makePath(iReq.jso.list[iterN].oid);
+            if (iReq.jso.map.page.sideline.part[iReq.jso.list[iterN].oid])
+              aApplyDiff(false);
+            else
+              fs.stat(aPath, aApplyDiff);
+            function aApplyDiff(noPath) {
               var aC = child.spawn('xdelta3', noPath ? ['-d', '-c'] : ['-d', '-c', '-s', aPath]);
               aC.stdin.end(aDiff);
-              sys.pump(aC.stdout, fs.createWriteStream(aPath+'.new'), noOpCallback);
+              sys.pump(aC.stdout, fs.createWriteStream(aPath+'.temp'), noOpCallback);
               var aErr; aC.stderr.on('data', function(data) { aErr = data });///
               aC.on('exit', function(code) {
                 if (code) throw new Error('xdelta3 error: '+code+' '+aErr);
-                if (noPath) {
-                  aDiff = null;
-                  aSetDiff();
-                  return;
-                }
-                var aBufLen = 0, aBufList = [];
-                aC = child.spawn('xdelta3', ['-e', '-s', aPath+'.new', aPath]);
-                aC.stdout.on('data', function(data) {
-                  aBufList.push(data);
-                  aBufLen += data.length;
-                });
-                var aErr; aC.stderr.on('data', function(data) { aErr = data });///
-                aC.on('exit', function(code) {
-                  if (code) throw new Error('xdelta3 error: '+code+' '+aErr);
-                  aDiff = new Buffer(aBufLen);
-                  for (var a=0, aOff=0; a < aBufList.length; aOff += aBufList[a++].length)
-                    aBufList[a].copy(aDiff, aOff, 0);
-                  aSetDiff();
+                fs.rename(aPath+'.temp', iReq.jso.map.page.sideline.part[iReq.jso.list[iterN].oid] || aPath+'.new', function(err) {
+                  if (err) throw err;
+                  if (noPath) {
+                    aDiff = null;
+                    aSetDiff();
+                    return;
+                  }
+                  var aBufLen = 0, aBufList = [];
+                  aC = child.spawn('xdelta3', ['-e', '-s', iReq.jso.map.page.sideline.part[iReq.jso.list[iterN].oid] || aPath+'.new', aPath]);
+                  aC.stdout.on('data', function(data) {
+                    aBufList.push(data);
+                    aBufLen += data.length;
+                  });
+                  var aErr; aC.stderr.on('data', function(data) { aErr = data });///
+                  aC.on('exit', function(code) {
+                    if (code) throw new Error('xdelta3 error: '+code+' '+aErr);
+                    aDiff = new Buffer(aBufLen);
+                    for (var a=0, aOff=0; a < aBufList.length; aOff += aBufList[a++].length)
+                      aBufList[a].copy(aDiff, aOff, 0);
+                    aSetDiff();
+                  });
                 });
               });
-            });
+            }
             break;
           default:
             throw new Error('revision has unsupported type '+iReq.jso.list[iterN].type);
@@ -1528,7 +1538,6 @@ Project.prototype = {
           delete iReq.jso.list;
           aNotify.push(iReq.jso);
           dbExec(that.db, "COMMIT TRANSACTION", noOpCallback, function() {
-            iReq.jso.map.ext = '.new';
             that._finishRevision(that.db, iReq.jso.map, null, null, function() {
               sClientCache.notify(iReq, aNotify, that.oid);
             });
@@ -1548,13 +1557,13 @@ Project.prototype = {
       if (err) throw err;
       if (row) aMsgHead = row;
     }, function() {
-      aMsgHead.filemap = [{oid:aMsgHead.oid+'.copy', size:0}];
+      aMsgHead.filemap = [{oid:aMsgHead.oid+'.temp', size:0}];
       var aOids = {};
       var aPath = getPath(aMsgHead.oid);
-      dupFile(aPath, aPath+'.copy', function(err) {
+      dupFile(aPath, aPath+'.temp', function(err) {
         if (err) throw err;
         var aDb = new sqlite.Database();
-        aDb.open(aPath+'.copy', function(err) {
+        aDb.open(aPath+'.temp', function(err) {
           if (err) throw err;
           dbExec(aDb, "BEGIN TRANSACTION;\
                        UPDATE page SET layoutw = NULL, dataw = NULL;\
@@ -1589,7 +1598,7 @@ Project.prototype = {
                 });
                 return;
               }
-              fs.unlink(aPath+'.copy', noOpCallback);
+              fs.unlink(aPath+'.temp', noOpCallback);
               var aAllBuf = new Buffer(aAllSize);
               for (var a=0, aOff=0; a < aMsgHead.filemap.length; aOff += aMsgHead.filemap[a++].size) {
                 aMsgHead.filemap[a].size.copy(aAllBuf, aOff, 0);
@@ -1605,6 +1614,254 @@ Project.prototype = {
         });
       });
     });
+  } ,
+
+  checkConflict: function(iRevision, iCallback, iConflict, iChain) {
+    var that = this;
+    if (!that.stmt.checkConflict) {
+      that.stmt.checkConflict = {
+        revision: "SELECT rowid, oid, map, previous, sideline, author FROM revision ORDER BY rowid DESC",
+        member: "SELECT joined FROM member WHERE uid = ?",
+        diff: "SELECT data FROM diff WHERE revision = ? AND object = ?",
+        page: "SELECT data, layout FROM page WHERE oid = ?",
+        proj: "SELECT data FROM projects.project WHERE oid = ?",
+        state: "SELECT client, state FROM clientstate",
+        setdiff: "UPDATE diff SET data = ?3 WHERE revision = ?1 AND object = ?2",
+        setpage: "UPDATE page SET data = ?2, layout = ?3 WHERE oid = ?1",
+        setproj: "UPDATE projects.project SET data = ?2 WHERE oid = ?1",
+        setstate: "UPDATE clientstate SET state = ?2 WHERE client = ?1",
+        setrev: "UPDATE revision SET sideline = ?2 WHERE oid = ?1"
+      };
+      dbPrepare(that.db, that.stmt.checkConflict, function(err) {
+        if (err) throw err;
+        that.checkConflict(iRevision, iCallback);
+      });
+      return;
+    }
+    that.stmt.checkConflict.revision.step(function(err, row) {
+      if (err) throw err;
+      if (row.oid === ' ') throw new Error('previous oid not found');
+      if (!iConflict) {
+        iConflict = [];
+        iChain = {};
+        aLogConflict(iRevision, { rowid:row.rowid+1, oid:' ', map:that.revisionMap, previous:row.oid, author:sUUId }, 'chain');
+      }
+      if (row.oid !== iRevision.previous) {
+        row.map = JSON.parse(row.map);
+        aLogConflict(iRevision, row, 'chain');
+        return that.checkConflict(iRevision, iCallback, iConflict, iChain);
+      }
+      function aLogConflict(main, alt, chain) {
+        if (chain) {
+          if (!iChain[alt.previous])
+            iChain[alt.previous] = {};
+          iChain[alt.previous][alt.oid] = alt;
+        } else if (alt.sideline || iConflict.indexOf(alt) >= 0)
+          return aRecur();
+        if (alt.map.touch && main.map.touch)
+          return aRecur(true);
+        for (var aPg in main.map.page) {
+          if (aPg in alt.map.page) {
+            if (alt.map.page[aPg].op === '!' && main.map.page[aPg].op === '!')
+              return aRecur(true);
+            for (var aPt in main.map.page[aPg].part)
+              if (aPt in alt.map.page[aPg].part)
+                return aRecur(true);
+          }
+        }
+        aRecur();
+        function aRecur(hasConflict) {
+          if (hasConflict) {
+            for (var a=0; a < iConflict.length && alt.rowid < iConflict[a].rowid; ++a) {}
+            iConflict.splice(a, 0, alt);
+          }
+          if (!iChain[alt.oid])
+            return;
+          if (!chain)
+            for (var a in iChain[alt.oid])
+              aLogConflict(main, iChain[alt.oid][a]);
+          if (hasConflict)
+            for (var a in iChain[alt.oid])
+              aLogConflict(alt, iChain[alt.oid][a]);
+        }
+      }
+      that.stmt.checkConflict.revision.reset();
+      if (iConflict.length === 0)
+        return iCallback('apply');
+      iConflict.push({author:iRevision.author});
+      aCheckPermission();
+      function aCheckPermission() {
+        for (var a=0; a < iConflict.length; ++a) {
+          if (iConflict[a].joined)
+            continue;
+          that.stmt.checkConflict.member.bind(1, iConflict[a].author);
+          that.stmt.checkConflict.member.step(function(err, row) {
+            if (err) throw err;
+            that.stmt.checkConflict.member.reset();
+            iConflict[a].joined = row.joined;
+            aCheckPermission();
+          });
+          return;
+        }
+        var aAuthorJoined = iConflict.pop().joined;
+        var aSidelinedCurr = iConflict[0].oid === ' ';
+        if (!aSidelinedCurr || iConflict.length > 1)
+          for (var a=0; a < iConflict.length; ++a)
+            if (aAuthorJoined > iConflict[a].joined)
+              return iCallback('sideline');
+        dbResults(that.stmt.checkConflict.state, 'state', function(states) {
+          var aRevN = 0;
+          var aModList = { proj:{}, page:{}, part:{} };
+          if (aSidelinedCurr)
+            that.handle_commitRevision(null, aSideline);
+          else
+            aSideline();
+          function aSideline(newrev) {
+            if (newrev)
+              iConflict[0].oid = newrev.oid;
+            var aObject;
+console.log(iConflict[aRevN], iConflict[aRevN].map);
+            for (var aPg in iConflict[aRevN].map.page) {
+              for (var aPt in iConflict[aRevN].map.page[aPg].part) break;
+              aObject = aPt || iConflict[aRevN].map.page[aPg].op !== '.' && aPg;
+              if (aPt) {
+                delete iConflict[aRevN].map.page[aPg].part[aPt];
+              } else {
+                delete iConflict[aRevN].map.page[aPg];
+                for (var a=0; a < states.length; ++a) {
+                  if (!states[a].state.page[aPg] || !states[a].state.page[aPg][' '])
+                    continue;
+                  delete states[a].state.page[aPg][' '];
+                  states[a]._update = true;
+                }
+              }
+              if (aObject) {
+                if (!aModList[aPt?'part':'page'][aObject])
+                  aModList[aPt?'part':'page'][aObject] = null;
+                break;
+              }
+            }
+            if (!aObject && iConflict[aRevN].map.touch) {
+              delete iConflict[aRevN].map.touch;
+              aObject = that.oid;
+              if (!aModList.proj[aObject])
+                aModList.proj[aObject] = null;
+            }
+            if (aObject) {
+    console.log(aObject);
+              that.stmt.checkConflict.diff.bind(1, iConflict[aRevN].oid);
+              that.stmt.checkConflict.diff.bind(2, aObject);
+              that.stmt.checkConflict.diff.step(function(err, diffRow) {
+                if (err) throw err;
+                that.stmt.checkConflict.diff.reset();
+                if (aObject in aModList.part) {
+                  var aPath = getPath(aObject);
+                  if (aSidelinedCurr && aRevN === 0) {
+                    dupFile(aPath, aPath+'.temp', aForwardDiff);
+                  } else {
+                    var aC = child.spawn('xdelta3', ['-d', '-c', '-s', aModList.part[aObject] || aPath]);
+                    aC.stdin.end(diffRow.data);
+                    sys.pump(aC.stdout, fs.createWriteStream(aPath+'.temp'), noOpCallback);
+                    aC.on('exit', function(code) {
+                      aForwardDiff(code && new Error('xdelta3 exit with code '+code));
+                    });
+                  }
+                  function aForwardDiff(err) {
+                    if (err && err.errno !== process.ENOENT) throw err;
+                    var aTo = aModList.part[aObject] || aPath+(aSidelinedCurr && aRevN === 0 ? '.w' : '');
+                    var aDiff = 0, aBufList = [];
+                    var aC = child.spawn('xdelta3', err ? ['-e', aTo] : ['-e', '-s', aPath+'.temp', aTo]);
+                    aC.stdout.on('data', function(data) {
+                      aBufList.push(data);
+                      aDiff += data.length;
+                    });
+                    aC.on('exit', function(code) {
+                      if (code) throw new Error('xdelta error: '+code);
+                      if (aBufList.length === 1) {
+                        aDiff = aBufList[0];
+                      } else {
+                        aDiff = new Buffer(aDiff);
+                        for (var a=0, aPos=0; a < aBufList.length; aPos+=aBufList[a++].length)
+                          aBufList[a].copy(aDiff, aPos, 0);
+                      }
+                      that.stmt.checkConflict.setdiff.bind(1, iConflict[aRevN].oid);
+                      that.stmt.checkConflict.setdiff.bind(2, aObject);
+                      that.stmt.checkConflict.setdiff.bind(3, aDiff);
+                      that.stmt.checkConflict.setdiff.step(function(err, row) {
+                        if (err) throw err;
+                        that.stmt.checkConflict.setdiff.reset();
+                        fs.rename(aPath+'.temp', aPath+'.new', function(err) {
+                          if (err && err.errno !== process.ENOENT) throw err;
+                          if (!err && !aModList.part[aObject])
+                            aModList.part[aObject] = aPath+'.new';
+                          aSideline();
+                        });
+                      });
+                    });
+                  }
+                } else {
+                  var aType = aObject in aModList.page ? 'page' : 'proj';
+                  if (!aModList[aType][aObject]) {
+                    that.stmt.checkConflict[aType].bind(1, aObject);
+                    that.stmt.checkConflict[aType].step(function(err, row) {
+                      if (err) throw err;
+                      that.stmt.checkConflict[aType].reset();
+                      if (aType === 'page')
+                        row.layout = JSON.parse(row.layout);
+                      row.data = JSON.parse(row.data);
+                      aModList[aType][aObject] = row;
+                      aUpdateData();
+                    });
+                  } else {
+                    aUpdateData();
+                  }
+                  function aUpdateData() {
+                    that.unpatch(aModList[aType][aObject], JSON.parse(diffRow.data));
+                    that.stmt.checkConflict['set'+aType].bind(1, aObject);
+                    that.stmt.checkConflict['set'+aType].bind(2, JSON.stringify(aModList[aType][aObject].data));
+                    if (aType === 'page')
+                      that.stmt.checkConflict['set'+aType].bind(3, JSON.stringify(aModList[aType][aObject].layout));
+                    that.stmt.checkConflict['set'+aType].step(function(err, row) {
+                      if (err) throw err;
+                      that.stmt.checkConflict['set'+aType].reset();
+                      aSideline();
+                    });
+                  }
+                }
+              });
+              return;
+            }
+            that.stmt.checkConflict.setrev.bind(1, iConflict[aRevN].oid);
+            that.stmt.checkConflict.setrev.bind(2, iRevision.oid);
+            that.stmt.checkConflict.setrev.step(function(err, row) {
+              if (err) throw err;
+              that.stmt.checkConflict.setrev.reset();
+              if (++aRevN < iConflict.length)
+                aSideline();
+              else
+                aSaveState();
+              function aSaveState() {
+                for (var a=0; a < states.length; ++a) {
+                  if (!states[a]._update)
+                    continue;
+                  delete states[a]._update;
+                  that.stmt.checkConflict.setstate.bind(1, states[a].client);
+                  that.stmt.checkConflict.setstate.bind(2, JSON.stringify(states[a].state));
+                  that.stmt.checkConflict.setstate.step(function(err, row) {
+                    if (err) throw err;
+                    that.stmt.checkConflict.setstate.reset();
+                    aSaveState();
+                  });
+                  //. notify subscribers whose state changed
+                  return;
+                }
+                iCallback('apply', aModList.part);
+              }
+            });
+          }
+        });
+      }
+    });  
   } ,
 
   getMembers: function(iAppendArgs, iCallback) {
@@ -1674,6 +1931,14 @@ Project.prototype = {
   setClientState: { data:true },
   handle_setClientState: function(iReq) {
     var that = this;
+    if (!that.stmt.setState) {
+      that.db.prepare("INSERT OR REPLACE INTO clientstate VALUES ( ?, ? )", function(prepErr, stmt) {
+        if (prepErr) throw prepErr;
+        that.stmt.setState = stmt;
+        that.handle_setClientState(iReq);
+      });
+      return;
+    }
     that.stmt.setState.bind(1, iReq.client);
     that.stmt.setState.bind(2, JSON.stringify(iReq.data));
     that.stmt.setState.step(function(stepErr, row) {
@@ -2050,10 +2315,10 @@ Project.prototype = {
             fs.stat(aRevCopy, function(statErr, stats) {
               var aC = child.spawn('xdelta3', ['-d', '-c', '-s', statErr ? getPath(aPt) : aRevCopy]);
               aC.stdin.end(row.data);
-              sys.pump(aC.stdout, fs.createWriteStream(aRevCopy+'.new'), noOpCallback);
+              sys.pump(aC.stdout, fs.createWriteStream(aRevCopy+'.temp'), noOpCallback);
               aC.on('exit', function(code) {
                 if (code) throw 'xdelta3 exit with code '+code;
-                fs.rename(aRevCopy+'.new', aRevCopy, function(err) {
+                fs.rename(aRevCopy+'.temp', aRevCopy, function(err) {
                   if (err) throw err;
                   aPtFn();
                 });
@@ -2305,18 +2570,19 @@ Project.prototype = {
   revisionMapJson: JSON.stringify({touch:(new Date).toISOString(), page:{}}),
 
   commitRevision: { autogen:true },
-  handle_commitRevision: function(iReq) {
+  handle_commitRevision: function(iReq, iNoSendCallback) {
     if (!this.revisionMap.touch) {
       for (var any in this.revisionMap.page) break;
       if (!any)
         return sRespond(iReq, {status:'ok'});
     }
     var aSql = "\
-      BEGIN TRANSACTION;\
+      SAVEPOINT commit_revision;\
       "+kIncrOid+";\
-      INSERT INTO revision VALUES ( '!'||("+kNewOid+"), '"+sUUId+"', '"+(new Date).toISOString()+"',\
+      INSERT INTO revision VALUES (\
+        "+(iNoSendCallback ? '' : "'!'||")+"("+kNewOid+"), '"+sUUId+"', '"+(new Date).toISOString()+"',\
         (SELECT map FROM revision WHERE oid = ' '),\
-        (SELECT oid FROM revision ORDER BY rowid DESC LIMIT 1) );\
+        (SELECT oid FROM revision ORDER BY rowid DESC LIMIT 1), NULL );\
       SELECT * FROM revision WHERE rowid = last_insert_rowid();\
       UPDATE revision SET map = NULL WHERE oid = ' ';";
     var that = this;
@@ -2329,90 +2595,80 @@ Project.prototype = {
         aRev.map = JSON.parse(aRev.map);
       }
     }, function () {
-      var aState = {};
-      dbExec(that.db, "SELECT state, client FROM clientstate", function(err, row) {
-        if (err) throw err;
-        if (!row) return
-        var aSt = JSON.parse(row.state);
-        for (var a in that.revisionMap.page) {
-          if (!aSt.page[a] || !aSt.page[a][' '])
-            continue;
-          aSt.page[a][aRev.oid] = JSON.parse(JSON.stringify(aSt.page[a][' ']));
-          aSt.page[a][aRev.oid].rev = aRev.oid;
-          if (!aState[row.client])
-            aState[row.client] = aSt;
-        }
-      }, aFinish);
-      function aFinish() {
-        for (var aClient in aState) {
-          that.stmt.setState.bind(1, aClient);
-          that.stmt.setState.bind(2, JSON.stringify(aState[aClient]));
-          that.stmt.setState.step(function(err, row) {
-            if (err) throw err;
-            that.stmt.setState.reset();
-            aFinish();
-          });
-          // notify subscribers whose state changed
-          delete aState[aClient];
-          return;
-        }
-        that.getMembers(null, function(list) {
-          for (var aAny in list) break;
-          var aBufList = aAny && [];
-          aRev.list = aAny && [];
-          that._makeDiffs(aRev.oid, aBufList, aRev.list, function() {
-            aRev.type = 'revision';
-            if (!aAny)
-              return aCommit();
-            var aRevData = 0;
-            for (var a=0; a < aRev.list.length; ++a)
-              aRevData += aRev.list[a].size;
-            aRevData = new Buffer(aRevData);
-            for (var aOff=0, a=0; a < aBufList.length; aOff += aBufList[a++].length) {
-              if (aBufList[a] instanceof Buffer)
-                aBufList[a].copy(aRevData, aOff, 0);
-              else
-                aRevData.write(aBufList[a], aOff);
-            }
-            aRev.project = that.oid;
-            storeFile(sSendDir+aRev.oid, MqClient.packMsg(aRev, aRevData), function(err) {
-              if (err) throw err;
-              aCommit(aRev, aRevData);
-            });
-          });
-          function aCommit(rev, revdata) {
-            dbExec(that.db, "COMMIT TRANSACTION", noOpCallback, function () {
-              that._finishRevision(that.db, that.revisionMap, rev, revdata, function() {
-                that.revisionMap = that.revisionMapInit;
-                delete aRev.list;
-                sClientCache.notify(iReq, aRev, that.oid);
-              });
-            });
+      if (iNoSendCallback)
+        aFinish({});
+      else
+        that.getMembers(null, aFinish);
+      function aFinish(list) {
+        for (var aAny in list) break;
+        var aBufList = aAny && [];
+        aRev.list = aAny && [];
+        that._makeDiffs(aRev.oid, aBufList, aRev.list, function() {
+          aRev.type = 'revision';
+          if (!aAny)
+            return aCommit();
+          var aRevData = 0;
+          for (var a=0; a < aRev.list.length; ++a)
+            aRevData += aRev.list[a].size;
+          aRevData = new Buffer(aRevData);
+          for (var aOff=0, a=0; a < aBufList.length; aOff += aBufList[a++].length) {
+            if (aBufList[a] instanceof Buffer)
+              aBufList[a].copy(aRevData, aOff, 0);
+            else
+              aRevData.write(aBufList[a], aOff);
           }
+          aRev.project = that.oid;
+          storeFile(sSendDir+aRev.oid, MqClient.packMsg(aRev, aRevData), function(err) {
+            if (err) throw err;
+            aCommit(aRev, aRevData);
+          });
         });
+        function aCommit(rev, revdata) {
+          dbExec(that.db, "RELEASE commit_revision", noOpCallback, function () {
+            if (iNoSendCallback)
+              return iNoSendCallback(aRev);
+            that._finishRevision(that.db, that.revisionMap, rev, revdata, function() {
+              that.revisionMap = that.revisionMapInit;
+              delete aRev.list;
+              sClientCache.notify(iReq, aRev, that.oid);
+            });
+          });
+        }
       }
     });
   } ,
 
   _finishRevision: function (iDb, iMap, iRev, iRevData, iCallback) {
     var that = this;
-    if (!iMap.ext) iMap.ext = '.w';
+    if (iMap.page.sideline) {
+      var aSide = iMap.page.sideline
+      delete iMap.page.sideline;
+      var aSetMap = ", map = '"+JSON.stringify(iMap)+"'";
+      iMap.page.sideline = aSide;
+    }
+    var aExt = iMap.page.sideline ? '.new' : '.w';
     for (var aPg in iMap.page) {
       for (var aPt in iMap.page[aPg].part) {
         var aPath = getPath(aPt);
-        if (sAttachments.open[aPt])
-          dupFile(aPath+iMap.ext, aPath, function(err) {
+        if (sAttachments.open[aPt]) {
+          dupFile(aPath+aExt, aPath, function(err) {
             if (err) throw err;
             that._finishRevision(iDb, iMap, iRev, iRevData, iCallback);
           });
-        else
-          fs.rename(aPath+iMap.ext, aPath, function(err) {
+        } else {
+          var aCbCount = aPg === 'sideline' ? 2 : 1;
+          if (aPg === 'sideline')
+            fs.unlink(aPath+'.w', aCallback);
+          fs.rename(aPath+aExt, aPath, aCallback);
+          function aCallback(err) {
             if (err && err.errno !== process.ENOENT) throw err;
-            syncFile(getParent(aPath), function(err) {
-              if (err) throw err;
-              that._finishRevision(iDb, iMap, iRev, iRevData, iCallback);
-            });
-          });
+            if (--aCbCount === 0)
+              syncFile(getParent(aPath), function(err) {
+                if (err) throw err;
+                that._finishRevision(iDb, iMap, iRev, iRevData, iCallback);
+              });
+          }
+        }
         delete iMap.page[aPg].part[aPt];
         return;
       }
@@ -2426,7 +2682,7 @@ Project.prototype = {
     else
       aUpdate();
     function aUpdate() {
-      dbExec(iDb, "UPDATE revision SET oid = substr(oid, 2) WHERE oid LIKE '!%'", noOpCallback, iCallback);
+      dbExec(iDb, "UPDATE revision SET oid = substr(oid, 2)"+(aSetMap||'')+" WHERE oid LIKE '!%'", noOpCallback, iCallback);
     }
   }
 
