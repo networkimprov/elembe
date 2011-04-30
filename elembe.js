@@ -250,6 +250,39 @@ function syncFile(iPath, iCallback) {
   });
 }
 
+function xdDiff(iSrc, iDest, iCallback) {
+  /*if (typeof iCallback === 'undefined' && typeof oList === 'function') {
+    iCallback = oList;
+    oList = null;
+  }*/
+  var aC = child.spawn('xdelta3', iSrc ? ['-e', '-s', iSrc, iDest] : ['-e', iDest]);
+  var aErr = 'unknown error';
+  aC.stderr.on('data', function(data) { aErr = data.toString() });
+  var aBufLen = 0, aBufList = [];
+  aC.stdout.on('data', function(data) { aBufList.push(data); aBufLen += data.length; });
+  aC.on('exit', function(code) {
+    if (code)
+      return iCallback(new Error('xdDiff failed: '+aErr));
+    if (aBufList.length === 1)
+      return iCallback(null, aBufList[0]);
+    var aDiff = new Buffer(aBufLen);
+    for (var a=0, aOff=0; a < aBufList.length; aOff += aBufList[a++].length)
+      aBufList[a].copy(aDiff, aOff, 0);
+    iCallback(null, aDiff);
+  });
+}
+
+function xdPatch(iSrc, iDiff, iDest, iCallback) {
+  var aC = child.spawn('xdelta3', iSrc ? ['-d', '-c', '-s', iSrc] : ['-d', '-c']);
+  var aErr = 'unknown error';
+  aC.stderr.on('data', function(data) { aErr = data.toString() });
+  sys.pump(aC.stdout, fs.createWriteStream(iDest), noOpCallback);
+  aC.on('exit', function(code) {
+    iCallback(code ? new Error('xdPatch failed: '+aErr) : undefined);
+  });
+  aC.stdin.end(iDiff);
+}
+
 function Queue() {
   this.list = {};
   this.firstI = 0;
@@ -1244,6 +1277,7 @@ function Project(iRecord, iCallback) {
   this.oid = iRecord.oid;
   this.service = iRecord.service;
   this.revisionMap = null;
+  this.parentMap = null;
   this.stmt = {};
   this.db = new sqlite.Database();
   this.queue = new Queue;
@@ -1274,7 +1308,6 @@ function Project(iRecord, iCallback) {
         if (prepErr) throw prepErr;
         that.stmt.setRevisionMap = stmt;
         if (aRevPending) {
-          that.revisionMap = that.revisionMapInit;
           fs.readFile(sSendDir+aRevPending.oid.slice(1), function(err, buffer) {
             if (err && err.errno !== process.ENOENT) throw err;
             if (buffer) {
@@ -1285,18 +1318,22 @@ function Project(iRecord, iCallback) {
             that._finishRevision(that.db, JSON.parse(aRevPending.map), aRevMsg, aRevBuf, aDoneCall);
           });
         } else {
-          dbExec(that.db, "INSERT OR IGNORE INTO revision (oid, map) VALUES (' ', '"+that.revisionMapJson+"');\
-                            SELECT map FROM revision WHERE oid = ' ';", function(err, row) {
-            if (err) throw err;
-            if (row) that.revisionMap = row.map ? JSON.parse(row.map) : that.revisionMapInit;
-          }, aDoneCall);
+          dbExec(that.db, "INSERT OR IGNORE INTO revision (oid, map, parents) VALUES (' ', '"+that.revisionMapJson()+"', '{}')", noOpCallback, aDoneCall);
         }
         function aDoneCall() {
-          that.queue.next();
-          if (aHasPage)
-            iCallback();
-          else
-            that.handle_newPage(null, iCallback);
+          dbExec(that.db, "SELECT map, parents FROM revision WHERE oid = ' '", function(err, row) {
+            if (err) throw err;
+            if (row) {
+              that.revisionMap = row.map ? JSON.parse(row.map) : that.revisionMapInit;
+              that.parentMap = JSON.parse(row.parents);
+            }
+          }, function() {
+            that.queue.next();
+            if (aHasPage)
+              iCallback();
+            else
+              that.handle_newPage(null, iCallback);
+          });
         }
       });
     });
@@ -1327,7 +1364,7 @@ Project.prototype = {
         author: 'text',
         date: 'text',      // iso/utc time
         map: 'text',        // json {project:{}, page:{oid:{op:'.', touch:'', part:{oid:{op:'!', touch:''}, ...}}, ...}}
-        previous: 'text',   // revision oid
+        parents: 'text',   // { author:counter, ... }
         sideline: 'text'
       },
       diff: {
@@ -1436,16 +1473,17 @@ Project.prototype = {
       }
       var aNotify = [];
       dbExec(that.db, "BEGIN TRANSACTION", noOpCallback, function() {
-        that.checkConflict(iReq.jso, function(op, partlist) {
-console.log(op, sys.inspect(partlist));
-          iReq.jso.map.page.sideline = {part:partlist||{}};
+        that.checkConflict(iReq.jso, function(sideline, partlist) {
+console.log(partlist);
+          if (partlist)
+            iReq.jso.map.page.sideline = {part:partlist};
           dbExec(that.db, "INSERT INTO revision VALUES (\
-                       '!"+iReq.jso.oid+"', \
+                       '"+(sideline ? '' : '!')+iReq.jso.oid+"', \
                        '"+iReq.jso.author+"', \
                        '"+iReq.jso.date+"', \
                        '"+JSON.stringify(iReq.jso.map)+"', \
-                       '"+iReq.jso.previous+"', \
-                       NULL);", noOpCallback, aIter);
+                       '"+JSON.stringify(iReq.jso.parents)+"', \
+                       "+(sideline ? "'"+sideline+"'" : "NULL")+")", noOpCallback, aIter);
         });
       });
       function aIter(iterN, iterO) {
@@ -1454,12 +1492,14 @@ console.log(op, sys.inspect(partlist));
           var aStart = iterO;
           iterO += iReq.jso.list[iterN].size;
           var aDiff = iReq.jso.list[iterN].type === 'part' ? iReq.data.slice(aStart, iterO) : iReq.data.toString('ascii', aStart, iterO);
+          if (!iReq.jso.map.page.sideline)
+            return aSetDiff(aDiff);
           switch(iReq.jso.list[iterN].type) {
           case 'proj':
             var aData = JSON.parse(aDiff).add;
             dbExec(that.db, "UPDATE projects.project SET data = '"+JSON.stringify(aData)+"' WHERE oid = '"+that.oid+"';", noOpCallback, function() {
               sClientCache.notify(null, {type:'projectdata', oid:that.oid, data:aData});
-              aSetDiff();
+              aSetDiff(aDiff);
             });
             break;
           case 'page':
@@ -1476,9 +1516,8 @@ console.log(op, sys.inspect(partlist));
               that.patch(aOrig, JSON.parse(aDiff));
               dbExec(that.db, "INSERT OR REPLACE INTO page VALUES \
                                ( '"+iReq.jso.list[iterN].oid+"', '"+JSON.stringify(aOrig.data)+"', NULL, '"+JSON.stringify(aOrig.layout)+"', NULL )", noOpCallback, function() {
-                if (iReq.jso.map.page[iReq.jso.list[iterN].oid].op !== '.')
-                  aNotify.push({type:'page', oid:iReq.jso.list[iterN].oid, data:aOrig.data});
-                aSetDiff();
+                aNotify.push({type:'page', oid:iReq.jso.list[iterN].oid, data:aOrig.data});
+                aSetDiff(aDiff);
               });
             });
             break;
@@ -1489,32 +1528,15 @@ console.log(op, sys.inspect(partlist));
             else
               fs.stat(aPath, aApplyDiff);
             function aApplyDiff(noPath) {
-              var aC = child.spawn('xdelta3', noPath ? ['-d', '-c'] : ['-d', '-c', '-s', aPath]);
-              aC.stdin.end(aDiff);
-              sys.pump(aC.stdout, fs.createWriteStream(aPath+'.temp'), noOpCallback);
-              var aErr; aC.stderr.on('data', function(data) { aErr = data });///
-              aC.on('exit', function(code) {
-                if (code) throw new Error('xdelta3 error: '+code+' '+aErr);
+              xdPatch(!noPath && aPath, aDiff, aPath+'.temp', function(err) {
+                if (err) throw err;
                 fs.rename(aPath+'.temp', iReq.jso.map.page.sideline.part[iReq.jso.list[iterN].oid] || aPath+'.new', function(err) {
                   if (err) throw err;
-                  if (noPath) {
-                    aDiff = null;
-                    aSetDiff();
-                    return;
-                  }
-                  var aBufLen = 0, aBufList = [];
-                  aC = child.spawn('xdelta3', ['-e', '-s', iReq.jso.map.page.sideline.part[iReq.jso.list[iterN].oid] || aPath+'.new', aPath]);
-                  aC.stdout.on('data', function(data) {
-                    aBufList.push(data);
-                    aBufLen += data.length;
-                  });
-                  var aErr; aC.stderr.on('data', function(data) { aErr = data });///
-                  aC.on('exit', function(code) {
-                    if (code) throw new Error('xdelta3 error: '+code+' '+aErr);
-                    aDiff = new Buffer(aBufLen);
-                    for (var a=0, aOff=0; a < aBufList.length; aOff += aBufList[a++].length)
-                      aBufList[a].copy(aDiff, aOff, 0);
-                    aSetDiff();
+                  if (noPath)
+                    return aSetDiff(null);
+                  xdDiff(iReq.jso.map.page.sideline.part[iReq.jso.list[iterN].oid] || aPath+'.new', aPath, function(err, diff) {
+                    if (err) throw err;
+                    aSetDiff(diff);
                   });
                 });
               });
@@ -1523,26 +1545,32 @@ console.log(op, sys.inspect(partlist));
           default:
             throw new Error('revision has unsupported type '+iReq.jso.list[iterN].type);
           }
-          function aSetDiff() {
+          function aSetDiff(diff) {
             that.stmt.revisionDiff.bind(1, iReq.jso.list[iterN].oid);
-            that.stmt.revisionDiff.bind(2, aDiff);
+            that.stmt.revisionDiff.bind(2, diff);
             that.stmt.revisionDiff.step(function(err, row) {
               if (err) throw err;
               that.stmt.revisionDiff.reset();
               aIter(++iterN, iterO);
             });
           }
-        } else {
-          that.stmt.revisionDiff.finalize();
-          delete that.stmt.revisionDiff;
-          delete iReq.jso.list;
-          aNotify.push(iReq.jso);
-          dbExec(that.db, "COMMIT TRANSACTION", noOpCallback, function() {
-            that._finishRevision(that.db, iReq.jso.map, null, null, function() {
-              sClientCache.notify(iReq, aNotify, that.oid);
-            });
-          });
+          return;
         }
+        that.stmt.revisionDiff.finalize();
+        delete that.stmt.revisionDiff;
+        that.parentMap[iReq.jso.author] = +iReq.jso.oid.slice(iReq.jso.oid.indexOf('.')+1);
+        delete iReq.jso.list;
+        aNotify.push(iReq.jso);
+        dbExec(that.db, "UPDATE revision SET parents = '"+JSON.stringify(that.parentMap)+"' WHERE oid = ' ';\
+                         COMMIT TRANSACTION;", noOpCallback, function() {
+          if (iReq.jso.map.page.sideline)
+            that._finishRevision(that.db, iReq.jso.map, null, null, aDone);
+          else
+            aDone();
+          function aDone() {
+            sClientCache.notify(iReq, aNotify, that.oid);
+          }
+        });
       }
       return;
     default:
@@ -1620,7 +1648,7 @@ console.log(op, sys.inspect(partlist));
     var that = this;
     if (!that.stmt.checkConflict) {
       that.stmt.checkConflict = {
-        revision: "SELECT rowid, oid, map, previous, sideline, author FROM revision ORDER BY rowid DESC",
+        revision: "SELECT rowid, oid, map, parents, sideline, author FROM revision ORDER BY rowid DESC",
         member: "SELECT joined FROM member WHERE uid = ?",
         diff: "SELECT data FROM diff WHERE revision = ? AND object = ?",
         page: "SELECT data, layout FROM page WHERE oid = ?",
@@ -1639,34 +1667,49 @@ console.log(op, sys.inspect(partlist));
       return;
     }
     that.stmt.checkConflict.revision.step(function(err, row) {
-      if (err) throw err;
-      if (row.oid === ' ') throw new Error('previous oid not found');
+      if (err) throw err;console.log( iRevision.parents);
+      if (row.oid === ' ') throw new Error('parent not found');
       if (!iConflict) {
         iConflict = [];
         iChain = {};
-        aLogConflict(iRevision, { rowid:row.rowid+1, oid:' ', map:that.revisionMap, previous:row.oid, author:sUUId }, 'chain');
+        iRevision._parents = {};
+        aLogConflict(iRevision, { rowid:row.rowid+1, oid:' ', map:that.revisionMap, parents:that.parentMap, author:sUUId }, 'chain');
       }
-      if (row.oid !== iRevision.previous) {
+      var aOidCounter = +row.oid.slice(row.oid.indexOf('.')+1);
+      if (aOidCounter > (iRevision.parents[row.author] || 0)) {
         row.map = JSON.parse(row.map);
         aLogConflict(iRevision, row, 'chain');
-        return that.checkConflict(iRevision, iCallback, iConflict, iChain);
+      } else if (aOidCounter === iRevision.parents[row.author]) {
+        iRevision._parents[row.author] = iRevision.parents[row.author];
+        delete iRevision.parents[row.author];
+        for (var any in iRevision.parents) break;
+        if (!any) {
+          iRevision.parents = iRevision._parents;
+          delete iRevision._parents;
+        }
       }
+      if (iRevision._parents)
+        return that.checkConflict(iRevision, iCallback, iConflict, iChain);
       function aLogConflict(main, alt, chain) {
         if (chain) {
-          if (!iChain[alt.previous])
-            iChain[alt.previous] = {};
-          iChain[alt.previous][alt.oid] = alt;
-        } else if (alt.sideline || iConflict.indexOf(alt) >= 0)
-          return aRecur();
-        if (alt.map.touch && main.map.touch)
-          return aRecur(true);
-        for (var aPg in main.map.page) {
-          if (aPg in alt.map.page) {
-            if (alt.map.page[aPg].op === '!' && main.map.page[aPg].op === '!')
-              return aRecur(true);
-            for (var aPt in main.map.page[aPg].part)
-              if (aPt in alt.map.page[aPg].part)
+          for (var a in alt.parents) {
+            var aP = a+'.'+alt.parents[a];
+            if (!iChain[aP])
+              iChain[aP] = {};
+            iChain[aP][alt.oid] = alt;
+          }
+        }
+        if (!alt.sideline) {
+          if (alt.map.touch && main.map.touch)
+            return aRecur(true);
+          for (var aPg in main.map.page) {
+            if (aPg in alt.map.page) {
+              if (alt.map.page[aPg].op === '!' && main.map.page[aPg].op === '!')
                 return aRecur(true);
+              for (var aPt in main.map.page[aPg].part)
+                if (aPt in alt.map.page[aPg].part)
+                  return aRecur(true);
+            }
           }
         }
         aRecur();
@@ -1674,6 +1717,7 @@ console.log(op, sys.inspect(partlist));
           if (hasConflict) {
             for (var a=0; a < iConflict.length && alt.rowid < iConflict[a].rowid; ++a) {}
             iConflict.splice(a, 0, alt);
+            alt.sideline = true;
           }
           if (!iChain[alt.oid])
             return;
@@ -1687,7 +1731,7 @@ console.log(op, sys.inspect(partlist));
       }
       that.stmt.checkConflict.revision.reset();
       if (iConflict.length === 0)
-        return iCallback('apply');
+        return iCallback(null, {});
       iConflict.push({author:iRevision.author});
       aCheckPermission();
       function aCheckPermission() {
@@ -1706,9 +1750,9 @@ console.log(op, sys.inspect(partlist));
         var aAuthorJoined = iConflict.pop().joined;
         var aSidelinedCurr = iConflict[0].oid === ' ';
         if (!aSidelinedCurr || iConflict.length > 1)
-          for (var a=0; a < iConflict.length; ++a)
+          for (var a=iConflict.length-1; a >= 0; --a)
             if (aAuthorJoined > iConflict[a].joined)
-              return iCallback('sideline');
+              return iCallback(iConflict[a].oid);
         dbResults(that.stmt.checkConflict.state, 'state', function(states) {
           var aRevN = 0;
           var aModList = { proj:{}, page:{}, part:{} };
@@ -1756,37 +1800,21 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
                 that.stmt.checkConflict.diff.reset();
                 if (aObject in aModList.part) {
                   var aPath = getPath(aObject);
-                  if (aSidelinedCurr && aRevN === 0) {
+                  if (!diffRow.data) {
+                    //. flag file for removal by finishRevision
+                    aForwardDiff({errno:process.ENOENT});
+                  } else if (aSidelinedCurr && aRevN === 0) {
                     dupFile(aPath, aPath+'.temp', aForwardDiff);
                   } else {
-                    var aC = child.spawn('xdelta3', ['-d', '-c', '-s', aModList.part[aObject] || aPath]);
-                    aC.stdin.end(diffRow.data);
-                    sys.pump(aC.stdout, fs.createWriteStream(aPath+'.temp'), noOpCallback);
-                    aC.on('exit', function(code) {
-                      aForwardDiff(code && new Error('xdelta3 exit with code '+code));
-                    });
+                    xdPatch(aModList.part[aObject] || aPath, diffRow.data, aPath+'.temp', aForwardDiff);
                   }
                   function aForwardDiff(err) {
                     if (err && err.errno !== process.ENOENT) throw err;
-                    var aTo = aModList.part[aObject] || aPath+(aSidelinedCurr && aRevN === 0 ? '.w' : '');
-                    var aDiff = 0, aBufList = [];
-                    var aC = child.spawn('xdelta3', err ? ['-e', aTo] : ['-e', '-s', aPath+'.temp', aTo]);
-                    aC.stdout.on('data', function(data) {
-                      aBufList.push(data);
-                      aDiff += data.length;
-                    });
-                    aC.on('exit', function(code) {
-                      if (code) throw new Error('xdelta error: '+code);
-                      if (aBufList.length === 1) {
-                        aDiff = aBufList[0];
-                      } else {
-                        aDiff = new Buffer(aDiff);
-                        for (var a=0, aPos=0; a < aBufList.length; aPos+=aBufList[a++].length)
-                          aBufList[a].copy(aDiff, aPos, 0);
-                      }
+                    xdDiff(!err && aPath+'.temp', aModList.part[aObject] || (aSidelinedCurr && aRevN === 0 ? aPath+'.w' : aPath), function(err, diff) {
+                      if (err) throw err;
                       that.stmt.checkConflict.setdiff.bind(1, iConflict[aRevN].oid);
                       that.stmt.checkConflict.setdiff.bind(2, aObject);
-                      that.stmt.checkConflict.setdiff.bind(3, aDiff);
+                      that.stmt.checkConflict.setdiff.bind(3, diff);
                       that.stmt.checkConflict.setdiff.step(function(err, row) {
                         if (err) throw err;
                         that.stmt.checkConflict.setdiff.reset();
@@ -1855,7 +1883,7 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
                   //. notify subscribers whose state changed
                   return;
                 }
-                iCallback('apply', aModList.part);
+                iCallback(null, aModList.part);
               }
             });
           }
@@ -2456,41 +2484,24 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
         var aPath = getPath(aPt, true);
         fs.stat(aPath, function(statErr, stats) {
           if (iBufList) {
-            var aSegList = [];
             ++iCallback.count;
-            var aC = child.spawn('xdelta3', statErr ? ['-e', aPath+'.w'] : ['-e', '-s', aPath, aPath+'.w']);
-            aC.stdout.on('data', function(data) { aSegList.push(data) });
-            aC.on('exit', function(code) {
-              if (code) throw new Error('xdelta error: '+code);
-              for (var a=0, aLen=0; a < aSegList.length; aLen += aSegList[a++].length)
-                iBufList.push(aSegList[a]);
-              iDiffList.push({oid:aPt, size:aLen, type:'part'});
+            xdDiff(!statErr && aPath, aPath+'.w', function(err, diff) {
+              if (err) throw err;
+              iBufList.push(diff);
+              iDiffList.push({oid:aPt, size:diff.length, type:'part'});
               iCallback();
             });
           }
           if (statErr)
-            return aInsert();
-          var aDiff = 0, aBufList = [];
-          var aC = child.spawn('xdelta3', ['-e', '-s', aPath+'.w', aPath]);
-          aC.stdout.on('data', function(data) {
-            aBufList.push(data);
-            aDiff += data.length;
+            return aInsert(null);
+          xdDiff(aPath+'.w', aPath, function(err, diff) {
+            if (err) throw err;
+            aInsert(diff);
           });
-          aC.on('exit', function(code) {
-            if (code) throw new Error('xdelta error: '+code);
-            if (aBufList.length === 1) {
-              aDiff = aBufList[0];
-            } else {
-              aDiff = new Buffer(aDiff);
-              for (var a=0, aPos=0; a < aBufList.length; aPos+=aBufList[a++].length)
-                aBufList[a].copy(aDiff, aPos, 0);
-            }
-            aInsert();
-          });
-          function aInsert() {
+          function aInsert(diff) {
             that.stmt.insertDiff.bind(1, aPt);
             that.stmt.insertDiff.bind(2, iRev);
-            that.stmt.insertDiff.bind(3, aDiff);
+            that.stmt.insertDiff.bind(3, diff);
             that.stmt.insertDiff.step(function(err, row) {
               if (err) throw err;
               that.stmt.insertDiff.reset();
@@ -2567,7 +2578,9 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
   } ,
 
   revisionMapInit: {touch:null, page:{}},
-  revisionMapJson: JSON.stringify({touch:(new Date).toISOString(), page:{}}),
+  revisionMapJson: function() {
+    return JSON.stringify({touch:(new Date).toISOString(), page:{}});
+  } ,
 
   commitRevision: { autogen:true },
   handle_commitRevision: function(iReq, iNoSendCallback) {
@@ -2582,9 +2595,8 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
       INSERT INTO revision VALUES (\
         "+(iNoSendCallback ? '' : "'!'||")+"("+kNewOid+"), '"+sUUId+"', '"+(new Date).toISOString()+"',\
         (SELECT map FROM revision WHERE oid = ' '),\
-        (SELECT oid FROM revision ORDER BY rowid DESC LIMIT 1), NULL );\
-      SELECT * FROM revision WHERE rowid = last_insert_rowid();\
-      UPDATE revision SET map = NULL WHERE oid = ' ';";
+        (SELECT parents FROM revision WHERE oid = ' '), NULL );\
+      SELECT * FROM revision WHERE rowid = last_insert_rowid();";
     var that = this;
     var aRev;
     dbExec(that.db, aSql, function(err, row) {
@@ -2593,6 +2605,8 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
         aRev = row;
         aRev.oid = aRev.oid.slice(1);
         aRev.map = JSON.parse(aRev.map);
+        aRev.parents = JSON.parse(aRev.parents);
+        that.parentMap[sUUId] = +aRev.oid.slice(aRev.oid.indexOf('.')+1);
       }
     }, function () {
       if (iNoSendCallback)
@@ -2624,7 +2638,8 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
           });
         });
         function aCommit(rev, revdata) {
-          dbExec(that.db, "RELEASE commit_revision", noOpCallback, function () {
+          dbExec(that.db, "UPDATE revision SET map = NULL, parents = '"+JSON.stringify(that.parentMap)+"' WHERE oid = ' ';\
+                           RELEASE commit_revision;", noOpCallback, function () {
             if (iNoSendCallback)
               return iNoSendCallback(aRev);
             that._finishRevision(that.db, that.revisionMap, rev, revdata, function() {
