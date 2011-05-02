@@ -1473,6 +1473,9 @@ Project.prototype = {
       }
       var aNotify = [];
       dbExec(that.db, "BEGIN TRANSACTION", noOpCallback, function() {
+        for (var a in that.parentMap)
+          if (!(a in iReq.jso.parents))
+            iReq.jso.parents[a] = 0;
         that.checkConflict(iReq.jso, function(sideline, partlist) {
 console.log(partlist);
           if (partlist)
@@ -1676,10 +1679,14 @@ console.log(partlist);
         aLogConflict(iRevision, { rowid:row.rowid+1, oid:' ', map:that.revisionMap, parents:that.parentMap, author:sUUId }, 'chain');
       }
       var aOidCounter = +row.oid.slice(row.oid.indexOf('.')+1);
-      if (aOidCounter > (iRevision.parents[row.author] || 0)) {
+      if (aOidCounter > iRevision.parents[row.author]) {
         row.map = JSON.parse(row.map);
+        row.parents = JSON.parse(row.parents);
         aLogConflict(iRevision, row, 'chain');
-      } else if (aOidCounter === iRevision.parents[row.author]) {
+        if (iRevision.parents[row.author] === 0 && !(row.author in row.parents))
+          aOidCounter = 0;
+      }
+      if (aOidCounter === iRevision.parents[row.author]) {
         iRevision._parents[row.author] = iRevision.parents[row.author];
         delete iRevision.parents[row.author];
         for (var any in iRevision.parents) break;
