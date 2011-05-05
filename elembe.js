@@ -120,21 +120,24 @@ function dbFinalize(ioSet) {
 function dbExec(db, iSql, iRowCallback, iDoneCallback) {
   db.prepare(iSql, function(prepErr, stmt) {
     if (prepErr)
-      throw prepErr;
-    var stepCall = function(stepErr, row) {
+      return iRowCallback(prepErr);
+    stmt.step(stepCall);
+    function stepCall(stepErr, row) {
+      if (stepErr)
+        stepErr.sql = stmt.sql();
       iRowCallback(stepErr, row);
-      if (stepErr) return;
       if (row)
         stmt.step(stepCall);
       else {
         stmt.finalize();
+        if (stepErr)
+          return;
         if (stmt.tail)
           dbExec(db, stmt.tail, iRowCallback, iDoneCallback);
         else if (iDoneCallback)
           iDoneCallback();
       }
-    };
-    stmt.step(stepCall);
+    }
   });
 }
 
@@ -283,6 +286,77 @@ function xdPatch(iSrc, iDiff, iDest, iCallback) {
   aC.stdin.end(iDiff);
 }
 
+function RecordPlayback(iType, iFile) {
+  try {
+  this.fd = fs.openSync(iFile, iType === 'record' ? 'a' : 'r', 0600);
+  if (iType === 'record' && fs.fstatSync(this.fd).size === 0) {
+    var aStr = JSON.stringify({__uuid__:sUUId});
+    var aBuf = new Buffer((aStr.length.toString(16)+'   ').slice(0,4) + aStr);
+    fs.writeSync(this.fd, aBuf, 0, aBuf.length, null);
+  }
+  } catch (err) {
+    this.error = 'RecordPlayback '+iFile+' error: '+err.message;
+    return;
+  }
+  if (iType === 'playback')
+    this.buf = new Buffer(256*256);
+}
+
+RecordPlayback.prototype.save = function(iReq) {
+  try {
+  var aBufs = [];
+  var aStr = JSON.stringify(iReq, function(key, value) {
+    if (key === 'connection' || key === 'response')
+      return;
+    if (!Buffer.isBuffer(value))
+      return value;
+    aBufs.push(value);
+    return {__buffer__:value.length};
+  });
+  aBufs.unshift(new Buffer((aStr.length.toString(16)+'   ').slice(0,4) + aStr));
+  for (var a=0; a < aBufs.length; ++a)
+    fs.writeSync(this.fd, aBufs[a], 0, aBufs[a].length, null);
+  } catch (err) {
+    console.log('recording error: '+err.message);
+  }
+};
+
+RecordPlayback.prototype.next = function() {
+  var that = this;
+  var aGot = fs.readSync(that.fd, that.buf, 0, 4, null);
+  if (aGot === 0) {
+    fs.closeSync(that.fd);
+    console.log('playback complete');
+    process.exit(0);
+  }
+  var aLen = parseInt(that.buf.toString('ascii', 0, 4), 16);
+  aGot = fs.readSync(that.fd, that.buf, 0, aLen, null);
+  if (aGot !== aLen)
+    console.log('playback error: request len '+aLen+' got '+aGot);
+  var aReq = JSON.parse(that.buf.toString('ascii', 0, aLen), function(key, value) {
+    if (typeof this[key] === 'object' && this[key] && '__buffer__' in this[key]) {
+      var aBuf = new Buffer(this[key].__buffer__);
+      aGot = fs.readSync(that.fd, aBuf, 0, this[key].__buffer__, null);
+      if (aGot !== this[key].__buffer__)
+        console.log('playback error: buffer misread');
+      return aBuf;
+    }
+    return value;
+  });
+  if (aReq.__uuid__) {
+    sUUId = aReq.__uuid__;
+    dbExec(sProjects.db, "UPDATE instance.instance SET uuid = '"+aReq.__uuid__+"'", noOpCallback, function() {
+      aReq = that.next();
+      if (aReq)
+        sProjects.queueRequest(aReq); //. should use sync dbExec, so this is done by caller
+    });
+    return;
+  }
+  console.log(aReq.type);
+  aReq.client = null;
+  return aReq;
+};
+
 function Queue() {
   this.list = {};
   this.firstI = 0;
@@ -312,12 +386,18 @@ var sEditCache = sMainDir+'#editcache/';
 var sSendDir = sMainDir+'#outbound/';
 var sInbound = sMainDir+'#inbound/';
 var sUUId;
+var sRecord = null;
+var sPlayback = null;
 
 var Inotify = inotify.Inotify;
 
 function main() {
-  var aAutogen = process.argv.length === 3 && process.argv[2] === 'autogen';
-  aUuid = aAutogen ? '#autogen' : uuid.generate();
+  var aAutogen;
+  switch (process.argv[2]) {
+  case 'autogen':  aAutogen  = true;            break;
+  case 'record':   sRecord   = process.argv[3]; break;
+  case 'playback': sPlayback = process.argv[3]; break;
+  }
 
   if (aAutogen) {
     var aMask = process.umask(0000);
@@ -325,7 +405,8 @@ function main() {
     fs.mkdirSync(sMainDir, 0711);
     } catch (err) {
       if (err.errno !== process.EEXIST) throw err;
-      throw new Error("can't autogen over existing data");
+      console.log("can't autogen over existing data");
+      return;
     }
     fs.mkdirSync(sRevisionCache, 0777);
     fs.mkdirSync(sEditCache, 0777);
@@ -340,13 +421,21 @@ function main() {
   aDb.open(sMainDir+'instance', function (openErr) {
     if (openErr) throw openErr;
     var aSchemaSql = createSchema(schema);
-    if (!aAutogen)
-      aSchemaSql += "INSERT OR IGNORE INTO instance (uuid) VALUES ('"+aUuid+"'); SELECT uuid FROM instance;";
+    aSchemaSql += aAutogen ? "INSERT INTO instance (uuid) VALUES ('"+uuid.generate()+"');" : "SELECT uuid FROM instance;";
     dbExec(aDb, aSchemaSql, function(err, row) {
       if (err) throw err;
       if (row) sUUId = row.uuid;
     }, function() {
       aDb.close();
+      if (sRecord || sPlayback) {
+        var aRp = new RecordPlayback(process.argv[2], sRecord || sPlayback);
+        if (aRp.error) {
+          console.log(aRp.error);
+          return;
+        }
+        if (sRecord) sRecord = aRp;
+        if (sPlayback) sPlayback = aRp;
+      }
       sProjects.init(function() {
         if (aAutogen) {
           sProjects.autogen(require('./autogen'), function() {
@@ -356,6 +445,10 @@ function main() {
           return;
         }
         sServices.start();
+        if (sPlayback) {
+          sPlayback.next();
+          return;
+        }
         aServer = http.createServer(httpRequest);
         aServer.listen(8000);
         var aSocket = io.listen(aServer);
@@ -599,8 +692,12 @@ var sServices = {
       if (err) throw err;
       sServices.s[iHost].msgHead = MqClient.unpackMsg(data);
       delete sServices.s[iHost].msgHead._buf;
-      sServices.s[iHost].conn.send(data);
-      sServices.s[iHost].timer = setTimeout(sServices._timeout, 20*1000, iHost);
+      if (sPlayback) {
+        fs.unlink(sSendDir+iHost+'/'+aId);
+      } else {
+        sServices.s[iHost].conn.send(data);
+        sServices.s[iHost].timer = setTimeout(sServices._timeout, 20*1000, iHost);
+      }
     });
   } ,
 
@@ -1174,6 +1271,8 @@ var sProjects = {
   } ,
 
   queueRequest: function(iReq) {
+    if (sRecord)
+      sRecord.save(iReq);
     if (!iReq.project || !this.pj[iReq.project]) {
       if (this.queue.post(iReq))
         this.processQueue(null, true);
@@ -1188,15 +1287,19 @@ var sProjects = {
     if (!iUseCurr)
       aQ.next();
     var aReq = aQ.curr();
-    if (!aReq)
+    if (!aReq) {
+      aReq = sPlayback && sPlayback.next();
+      if (aReq)
+        sProjects.queueRequest(aReq);
       return;
+    }
     if (aReq.project && !this.pj[aReq.project]) {
       this.lookup(aReq.project, function(data) {
         if (data === 'invite') {
           var aBuf = MqClient.packMsg({type:aReq.type, client:null, project:aReq.project, from:aReq.from, jso:aReq.jso}, aReq.data);
           storeFile(sInbound+aReq.project+'_'+Date.now(), aBuf, function(err) {
             if (err) throw err;
-            sRespond(aReq, {}, true);
+            sRespond(aReq, {}, 'noqueue');
           });
         } else if (data) {
           sProjects.pj[aReq.project] = new Project(data, function() {
@@ -1233,7 +1336,7 @@ var sProjects = {
             }
           });
         } else
-          sRespond(aReq, {error:'Request against invalid Project oid'}, true);
+          sRespond(aReq, {error:'Request against invalid Project oid'}, 'noqueue');
         sProjects.processQueue();
       });
       return;
@@ -1461,6 +1564,7 @@ Project.prototype = {
         }, function() {
           if (!aOk) {
             sRespond(iReq, {});
+            console.log('skip rev '+iReq.jso.oid+' from '+iReq.from);
             return;
           }
           that.db.prepare("INSERT INTO diff VALUES ( ?, '"+iReq.jso.oid+"', ? )", function(err, stmt) {
@@ -2198,7 +2302,7 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
       sClientCache.page(iReq.client, that.oid, iReq.page);
       row.layout = JSON.parse(row.layout);
       row.data = JSON.parse(row.data);
-      sRespond(iReq, row, true);
+      sRespond(iReq, row, 'sequence');
       that._sendParts(row.layout, 0, iReq);
     });
   } ,
@@ -2268,7 +2372,7 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
           fs.readFile(aCachedPg, 'utf8', function(fileErr, data) {
             if (fileErr) throw fileErr;
             var aPg = JSON.parse(data);
-            sRespond(iReq, aPg, true);
+            sRespond(iReq, aPg, 'sequence');
             that._sendParts(aPg.layout, 0, iReq);
           });
           return;
@@ -2305,7 +2409,7 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
           iData.revision = iReq.revision;
           fs.writeFile(aCachedPg, JSON.stringify(iData), 'utf8', function(fileErr) {
             if (fileErr) throw fileErr;
-            sRespond(iReq, iData, true);
+            sRespond(iReq, iData, 'sequence');
             that._sendParts(iData.layout, 0, iReq);
           });
         }
@@ -2421,7 +2525,7 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
     fs.stat(aPath+'.w', function(statErr, stats) {
       fs.readFile(statErr ? aPath : aPath+'.w', 'utf8', function(fileErr, buffer) {
         if (!fileErr)
-          sRespond(iReq, {type:'update', id:iReq.id+'+', list:[{type:'part', oid:iList[iIdx].oid, data:buffer}]}, true);
+          sRespond(iReq, {type:'update', id:iReq.id+'+', list:[{type:'part', oid:iList[iIdx].oid, data:buffer}]}, 'sequence');
         that._sendParts(iList, ++iIdx, iReq);
       });
     });
@@ -2725,12 +2829,16 @@ var sClientCache = {
   } ,
 
   project: function(iClient, iProj) {
+    if (!iClient) // playback
+      return;
     if (!this.cl[iClient].project[iProj])
       this.cl[iClient].project[iProj] = {};
     this.cl[iClient].project[iProj].current = true;
   } ,
 
   page: function(iClient, iProj, iPage) {
+    if (!iClient) // playback
+      return;
     if (!this.cl[iClient].project[iProj][iPage])
       this.cl[iClient].project[iProj][iPage] = {};
     this.cl[iClient].project[iProj][iPage].current = true;
@@ -2759,7 +2867,7 @@ var sClientCache = {
 
 }; // sClientCache
 
-function sRespond(iReq, iData, iNoCheck) {//. avoid overlap in iData members and response members
+function sRespond(iReq, iData, iNoContinue) {//. avoid overlap in iData members and response members
   if (iReq.response) {
     iReq.response.writeHead(200);
     iReq.response.end(iData.error || iData.status);
@@ -2776,7 +2884,7 @@ function sRespond(iReq, iData, iNoCheck) {//. avoid overlap in iData members and
       throw new Error(iData.error);
     iReq.callback();
   }
-  if (!iNoCheck)
+  if (!iNoContinue)
     sProjects.processQueue(iReq.project);
 }
 
