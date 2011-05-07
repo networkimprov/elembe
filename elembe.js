@@ -641,6 +641,8 @@ var sServices = {
         return;
       if (iRow.timer)
         clearTimeout(iRow.timer);
+      if (/^error/.test(type))
+        console.log('ack failure: '+type);
       var aCallbacks = 1;
       if (iRow.msgHead.etc && iRow.msgHead.etc.type === 'invite') {
         if (type !== 'ok') {
@@ -690,14 +692,15 @@ var sServices = {
     var aId = this.s[iHost].queue[0];
     fs.readFile(sSendDir+iHost+'/'+aId, function(err, data) {
       if (err) throw err;
+      if (sPlayback) {
+        sServices.s[iHost].msgHead = {};
+        setTimeout(sServices.s[iHost].conn.event_ack, 20, aId, 'ok');
+        return;
+      }
       sServices.s[iHost].msgHead = MqClient.unpackMsg(data);
       delete sServices.s[iHost].msgHead._buf;
-      if (sPlayback) {
-        fs.unlink(sSendDir+iHost+'/'+aId);
-      } else {
-        sServices.s[iHost].conn.send(data);
-        sServices.s[iHost].timer = setTimeout(sServices._timeout, 20*1000, iHost);
-      }
+      sServices.s[iHost].conn.send(data);
+      sServices.s[iHost].timer = setTimeout(sServices._timeout, 20*1000, iHost);
     });
   } ,
 
