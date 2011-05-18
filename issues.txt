@@ -1,0 +1,49 @@
+Elembe Issues
+
+code cleanup
+  Use prepared stmts when including parameters from relay messages
+  use dbPrepare for multiple prepares
+  class.prototype.function_name = function() ...
+  move queue routines out of sProjects
+  move pj list to Project.list
+  sClientCache to sClients; sRespond to sClients.respond
+    respond check that client exists
+
+verify request parameter types
+verify client message parameters
+
+Sidelining
+  Fix readRevision for sidelined revisions
+  Update client when cached page sidelined
+    Mark sidelined revisions in client list
+    set rev mode if current page sidelined
+    flag when uncommitted revision sidelined
+  force save of client data before applying incoming rev?
+  parts of sidelined rev can be pushed into current revision
+
+comments
+  protection against inconsistency when saving data and submitting relay msg
+  checkconflict logic; appending local uuid to incoming revs
+
+create thorough test sequence
+
+event & error logging; log rotation
+
+client
+  prevent add member when no revision filed
+
+sync all written files prior to commit
+
+port to node 0.5
+switch to sqlite3 module
+fs.utimes in dupFile
+
+activate new node for user
+peer-to-peer mirror new user node
+
+websocket.MQ
+  multiple nodes per user
+  prompt user to restart or deactivate unused nodes
+  suspend inactive users, purge updates & notify projects; returning user issues rejoin request
+
+
