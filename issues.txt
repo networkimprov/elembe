@@ -3,7 +3,6 @@ Elembe Issues
 code cleanup
   Use prepared stmts when including parameters from relay messages
   use dbPrepare for multiple prepares
-  sClients.respond check that client exists
   replace literals with constants
 
 verify request parameter types

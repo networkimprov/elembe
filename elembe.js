@@ -306,7 +306,7 @@ function RecordPlayback(iType, iFile) {
     try {
     var aBufs = [];
     var aStr = JSON.stringify(iReq, function(key, value) {
-      if (key === 'connection' || key === 'response')
+      if (key === 'response')
         return;
       if (!Buffer.isBuffer(value))
         return value;
@@ -559,9 +559,6 @@ function main() {
               return;
             }
             var aReq = JSON.parse(msg);
-            if (aReq.constructor === Array)
-              aReq = JSON.parse(aReq[0]);
-            aReq.connection = conn;
             aReq.client = aClientId;
             queueRequest(aReq);
           });
@@ -2864,14 +2861,15 @@ var sClients = {
     if (iReq.response) {
       iReq.response.writeHead(200);
       iReq.response.end(iData.error || iData.status);
-    } else if (iReq.connection) {
+    } else if (iReq.client) {
       if (!iData.id)
         iData.id = iReq.id;
       if (!iData.type)
         iData.type = iReq.type;
       if (iReq.project)
         iData.project = iReq.project;
-      iReq.connection.send(JSON.stringify(iData));
+      if (this.cl[iReq.client])
+        this.cl[iReq.client].connection.send(JSON.stringify(iData));
     } else if (iReq.callback) {
       if (iData.error)
         throw new Error(iData.error);
