@@ -302,60 +302,60 @@ function RecordPlayback(iType, iFile) {
     this.buf = new Buffer(256*256);
 }
 
-RecordPlayback.prototype.save = function(iReq) {
-  try {
-  var aBufs = [];
-  var aStr = JSON.stringify(iReq, function(key, value) {
-    if (key === 'connection' || key === 'response')
-      return;
-    if (!Buffer.isBuffer(value))
-      return value;
-    aBufs.push(value);
-    return {__buffer__:value.length};
-  });
-  aBufs.unshift(new Buffer((aStr.length.toString(16)+'   ').slice(0,4) + aStr));
-  for (var a=0; a < aBufs.length; ++a)
-    fs.writeSync(this.fd, aBufs[a], 0, aBufs[a].length, null);
-  } catch (err) {
-    console.log('recording error: '+err.message);
-  }
-};
-
-RecordPlayback.prototype.next = function() {
-  var that = this;
-  var aGot = fs.readSync(that.fd, that.buf, 0, 4, null);
-  if (aGot === 0) {
-    fs.closeSync(that.fd);
-    console.log('playback complete');
-    process.exit(0);
-  }
-  var aLen = parseInt(that.buf.toString('ascii', 0, 4), 16);
-  aGot = fs.readSync(that.fd, that.buf, 0, aLen, null);
-  if (aGot !== aLen)
-    console.log('playback error: request len '+aLen+' got '+aGot);
-  var aReq = JSON.parse(that.buf.toString('ascii', 0, aLen), function(key, value) {
-    if (typeof this[key] === 'object' && this[key] && '__buffer__' in this[key]) {
-      var aBuf = new Buffer(this[key].__buffer__);
-      aGot = fs.readSync(that.fd, aBuf, 0, this[key].__buffer__, null);
-      if (aGot !== this[key].__buffer__)
-        console.log('playback error: buffer misread');
-      return aBuf;
-    }
-    return value;
-  });
-  if (aReq.__uuid__) {
-    sUUId = aReq.__uuid__;
-    dbExec(sProjects.db, "UPDATE instance.instance SET uuid = '"+aReq.__uuid__+"'", noOpCallback, function() {
-      aReq = that.next();
-      if (aReq)
-        sProjects.queueRequest(aReq); //. should use sync dbExec, so this is done by caller
+  RecordPlayback.prototype.save = function(iReq) {
+    try {
+    var aBufs = [];
+    var aStr = JSON.stringify(iReq, function(key, value) {
+      if (key === 'connection' || key === 'response')
+        return;
+      if (!Buffer.isBuffer(value))
+        return value;
+      aBufs.push(value);
+      return {__buffer__:value.length};
     });
-    return;
-  }
-  console.log(aReq.type);
-  aReq.client = null;
-  return aReq;
-};
+    aBufs.unshift(new Buffer((aStr.length.toString(16)+'   ').slice(0,4) + aStr));
+    for (var a=0; a < aBufs.length; ++a)
+      fs.writeSync(this.fd, aBufs[a], 0, aBufs[a].length, null);
+    } catch (err) {
+      console.log('recording error: '+err.message);
+    }
+  };
+
+  RecordPlayback.prototype.next = function() {
+    var that = this;
+    var aGot = fs.readSync(that.fd, that.buf, 0, 4, null);
+    if (aGot === 0) {
+      fs.closeSync(that.fd);
+      console.log('playback complete');
+      process.exit(0);
+    }
+    var aLen = parseInt(that.buf.toString('ascii', 0, 4), 16);
+    aGot = fs.readSync(that.fd, that.buf, 0, aLen, null);
+    if (aGot !== aLen)
+      console.log('playback error: request len '+aLen+' got '+aGot);
+    var aReq = JSON.parse(that.buf.toString('ascii', 0, aLen), function(key, value) {
+      if (typeof this[key] === 'object' && this[key] && '__buffer__' in this[key]) {
+        var aBuf = new Buffer(this[key].__buffer__);
+        aGot = fs.readSync(that.fd, aBuf, 0, this[key].__buffer__, null);
+        if (aGot !== this[key].__buffer__)
+          console.log('playback error: buffer misread');
+        return aBuf;
+      }
+      return value;
+    });
+    if (aReq.__uuid__) {
+      sUUId = aReq.__uuid__;
+      dbExec(sProjects.db, "UPDATE instance.instance SET uuid = '"+aReq.__uuid__+"'", noOpCallback, function() {
+        aReq = that.next();
+        if (aReq)
+          queueRequest(aReq); //. should use sync dbExec, so this is done by caller
+      });
+      return;
+    }
+    console.log(aReq.type);
+    aReq.client = null;
+    return aReq;
+  };
 
 function Queue() {
   this.list = {};
@@ -363,22 +363,119 @@ function Queue() {
   this.nextI = 1;
 }
 
-Queue.prototype = {
-  curr: function() {
+  Queue.prototype.curr = function() {
     return this.firstI < this.nextI ? this.list[this.firstI] : null;
-  } ,
+  };
 
-  next: function() {
+  Queue.prototype.next = function() {
     if (++this.firstI === this.nextI)
-       this.firstI = this.nextI = 0;
-  } ,
+      this.firstI = this.nextI = 0;
+  };
 
-  post: function(iReq) {
+  Queue.prototype.post = function(iReq) {
     var aRet = this.firstI === this.nextI;
     this.list[this.nextI++] = iReq;
     return aRet;
+  };
+
+  function queueRequest(iReq) {
+    if (sRecord)
+      sRecord.save(iReq);
+    if (!iReq.project || !Project.list[iReq.project]) {
+      if (sProjects.queue.post(iReq))
+        processQueue(null, true);
+    } else {
+      if (Project.list[iReq.project].queue.post(iReq))
+        processQueue(iReq.project, true);
+    }
   }
-}; // Queue
+
+  function processQueue(iProject, iUseCurr) {
+    var aQ = iProject ? Project.list[iProject].queue : sProjects.queue;
+    if (!iUseCurr)
+      aQ.next();
+    var aReq = aQ.curr();
+    if (!aReq) {
+      aReq = sPlayback && sPlayback.next();
+      if (aReq)
+        queueRequest(aReq);
+      return;
+    }
+    if (aReq.project && !Project.list[aReq.project]) {
+      sProjects.lookup(aReq.project, function(data) {
+        if (data === 'invite') {
+          var aBuf = MqClient.packMsg({type:aReq.type, client:null, project:aReq.project, from:aReq.from, jso:aReq.jso}, aReq.data);
+          storeFile(sInbound+aReq.project+'_'+Date.now(), aBuf, function(err) {
+            if (err) throw err;
+            sClients.respond(aReq, {}, 'noqueue');
+          });
+        } else if (data) {
+          Project.list[aReq.project] = new Project(data, function() {
+            if (data.installed)
+              return aLastReq();
+            fs.readdir(sInbound, function(err, array) {
+              if (err) throw err;
+              array.sort();
+              var aIterDel, aIterN = 0;
+              aIter();
+              function aIter() {
+                if (aIterDel)
+                  fs.unlink(sInbound+aIterDel, noOpCallback);
+                while (aIterN < array.length && array[aIterN].slice(0, array[aIterN].lastIndexOf('_')) !== aReq.project) ++aIterN;
+                if (aIterN < array.length) {
+                  aIterDel = array[aIterN];
+                  fs.readFile(sInbound+array[aIterN++], function(err, buffer) {
+                    if (err) throw err;
+                    var aR = MqClient.unpackMsg(buffer);
+                    aR.callback = aIter;
+                    aR.data = aR._buf;
+                    delete aR._buf;
+                    Project.list[aReq.project].queue.post(aR);
+                    processQueue(aReq.project, true);
+                  });
+                  return;
+                }
+                sProjects.setInstalled(aReq.project, aLastReq);
+              }
+            });
+            function aLastReq() {
+              Project.list[aReq.project].queue.post(aReq);
+              processQueue(aReq.project, true);
+            }
+          });
+        } else
+          sClients.respond(aReq, {error:'Request against invalid Project oid'}, 'noqueue');
+        processQueue();
+      });
+      return;
+    }
+    try {
+    if (!aReq.hasOwnProperty('client'))
+      throw 'client';
+    var aHandler = 'handle_'+aReq.type;
+    if (aHandler in sProjects) {
+      for (a in sProjects[aReq.type])
+        if (!aReq.hasOwnProperty(a))
+          throw a;
+      sProjects[aHandler](aReq);
+    } else {
+      if (!aReq.hasOwnProperty('project'))
+        throw 'project';
+      if (aHandler in Project.list[aReq.project]) {
+        for (a in Project.list[aReq.project][aReq.type])
+          if (a === 'autogen' ? /^#autogen/.test(aReq.project) : !aReq.hasOwnProperty(a))
+            throw a;
+        Project.list[aReq.project][aHandler](aReq);
+      } else {
+        throw 'unknown Project request '+aReq.type;
+      }
+    }
+    } catch (aErr) {
+      if (typeof aErr === 'object')
+        throw aErr;
+      sClients.respond(aReq, {error: aReq.type + (aErr === 'autogen' ? ' illegal for autogen project' : ' request missing parameter '+aErr)});
+    }
+  }
 
 var sMainDir = 'sqltest/';
 var sRevisionCache = sMainDir+'#revisioncache/';
@@ -454,7 +551,7 @@ function main() {
         var aSocket = io.listen(aServer);
         aSocket.on('connection', function(conn) {
           var aClientId = conn.request.headers.cookie.slice(conn.request.headers.cookie.indexOf('=')+1);
-          sClientCache.client(aClientId, conn);
+          sClients.client(aClientId, conn);
           var aOn = true;
           conn.on('message', function(msg) {
             if (!aOn) {
@@ -466,12 +563,12 @@ function main() {
               aReq = JSON.parse(aReq[0]);
             aReq.connection = conn;
             aReq.client = aClientId;
-            sProjects.queueRequest(aReq);
+            queueRequest(aReq);
           });
           conn.on('disconnect', function() {
             aOn = false;
             sAttachments.close(aClientId);
-            sClientCache.client(aClientId, null);
+            sClients.client(aClientId, null);
           });
         });
       });
@@ -506,7 +603,7 @@ function httpRequest(req, res) {
       });
       req.on('end', function() {
         aBuf = aBuf.slice(0, aLen-(aLastData.length-aLastData.lastIndexOf('\r\n--')));
-        sProjects.queueRequest({type:'writePart', client:null, project:aUrl.query.project, page:aUrl.query.page, part:aUrl.query.oid, data:aBuf, response:res});
+        queueRequest({type:'writePart', client:null, project:aUrl.query.project, page:aUrl.query.page, part:aUrl.query.oid, data:aBuf, response:res});
       });
     } else {
       aFile = aUrl.query.oid.indexOf('_') < 0 ? getPath(aUrl.query.oid) : sRevisionCache+aUrl.query.oid;
@@ -553,9 +650,10 @@ var MqClient = require('mqclient');
 
 var sServices = {
   db: null,
-  s: {},
+  s: {}
+};
 
-  start: function() {
+  sServices.start = function() {
     var that = this;
     that.db = new sqlite.Database();
     that.db.open(sMainDir+'services', function(openErr) {
@@ -565,24 +663,24 @@ var sServices = {
         if (row)
           that._create(row, function(svc) {
             that._connect(svc.host);
-            sClientCache.notify(null, {type:'services', list:that.list(svc.host)});
+            sClients.notify(null, {type:'services', list:that.list(svc.host)});
           });
       }, noOpCallback);
     });
-  } ,
+  };
 
-  end: function() {
+  sServices.end = function() {
     //. queue disconnect if conn in use
     for (var a in this.s) {
       if (this.s[a].status !== 'offline' && this.s[a].status !== '?') {
         this.s[a].status = 'signing off';
-        sClientCache.notify(null, {type:'services', list:this.list(a)});
+        sClients.notify(null, {type:'services', list:this.list(a)});
         this.s[a].conn.close();
       }
     }
-  } ,
+  };
 
-  _create: function(iRow, iCallback) {
+  sServices._create = function(iRow, iCallback) {
     if (!('queue' in iRow)) {
       fs.readdir(sSendDir+iRow.host, function(err, array) {
         if (err && err.errno !== process.ENOENT) throw err;
@@ -610,13 +708,13 @@ var sServices = {
       }
       iRow.newreg = 0;
       dbExec(sServices.db, "UPDATE service SET newreg=0, aliases='"+iRow.aliases+"'"+aJoined+" WHERE host='"+iRow.host+"'", noOpCallback, function() {
-        sClientCache.notify(null, {type:'services', list:sServices.list(iRow.host)});
+        sClients.notify(null, {type:'services', list:sServices.list(iRow.host)});
       });
     });
     iRow.conn.on('info', function(msg) {
       if (msg === 'ok login') {
         iRow.status = 'online';
-        sClientCache.notify(null, {type:'services', list:sServices.list(iRow.host)});
+        sClients.notify(null, {type:'services', list:sServices.list(iRow.host)});
         if (iRow.newreg)
           iRow.conn.register(sUUId, '', iRow.aliases);
         sServices._sendNext(iRow.host);
@@ -628,13 +726,13 @@ var sServices = {
       if (iRow.timer)
         clearTimeout(iRow.timer);
       iRow.status = 'quit: '+msg;
-      sClientCache.notify(null, {type:'services', list:sServices.list(iRow.host)});
+      sClients.notify(null, {type:'services', list:sServices.list(iRow.host)});
       console.log('service quit: '+iRow.host+' '+msg);
     });
     iRow.conn.on('deliver', function(id, from, msg, etc) {
       var aData = typeof msg === 'undefined' ? null : msg;
       var aReq = {type:etc.project ? 'projectImport' : 'importt', client:null, project:etc.project, from:from, jso:etc, data:aData, callback:function() { iRow.conn.ack(id, 'ok') } };
-      sProjects.queueRequest(aReq);
+      queueRequest(aReq);
     });
     iRow.conn.on('ack', function(id, type) {
       if (!iRow.queue.length || id !== iRow.queue[0])
@@ -647,9 +745,9 @@ var sServices = {
       if (iRow.msgHead.etc && iRow.msgHead.etc.type === 'invite') {
         if (type !== 'ok') {
           ++aCallbacks;
-          sProjects.queueRequest({type:'postMsg', client:null, project:iRow.msgHead.etc.oid, msg:'Invited user '+iRow.msgHead.alias+' is unknown', callback:aOk});
+          queueRequest({type:'postMsg', client:null, project:iRow.msgHead.etc.oid, msg:'Invited user '+iRow.msgHead.alias+' is unknown', callback:aOk});
         }
-        sProjects.queueRequest({type:'projectImport', client:null, project:iRow.msgHead.etc.oid, from:sUUId, data:null, callback:aOk,
+        queueRequest({type:'projectImport', client:null, project:iRow.msgHead.etc.oid, from:sUUId, data:null, callback:aOk,
           jso:{type:'memberAlias', alias:iRow.msgHead.alias, invite:type === 'ok' ? 'accept' : 'invalid'}});
         return;
       }
@@ -669,12 +767,12 @@ var sServices = {
         clearTimeout(iRow.timer);
         iRow.timer = null;
       }
-      sClientCache.notify(null, {type:'services', list:sServices.list(iRow.host)});
+      sClients.notify(null, {type:'services', list:sServices.list(iRow.host)});
     });
     iCallback(iRow);
-  } ,
+  };
 
-  _connect: function(iHost) {
+  sServices._connect = function(iHost) {
     var aS = this.s[iHost];
     aS.status = 'trying';
     var aAddr = iHost.split(':');
@@ -684,9 +782,9 @@ var sServices = {
       else
         aS.conn.login(sUUId, aS.password);
     });
-  } ,
+  };
 
-  _sendNext: function(iHost) {
+  sServices._sendNext = function(iHost) {
     if (!this.s[iHost].queue.length)
       return;
     var aId = this.s[iHost].queue[0];
@@ -702,14 +800,14 @@ var sServices = {
       sServices.s[iHost].conn.send(data);
       sServices.s[iHost].timer = setTimeout(sServices._timeout, 20*1000, iHost);
     });
-  } ,
+  };
 
-  _timeout: function(iHost) {
+  sServices._timeout = function(iHost) {
     sServices.s[iHost].timer = null;
     sServices._sendNext(iHost);
-  } ,
+  };
 
-  touch: function(iHost, iAliases, iComment, iReq) {
+  sServices.touch = function(iHost, iAliases, iComment, iReq) {
     var that = this;
     if (!(iHost in this.s)) {
       var aPass = uuid.generate();
@@ -739,11 +837,11 @@ var sServices = {
         that._connect(iHost);
       else if (that.s[iHost].status === 'online')
         that.s[iHost].conn.register(sUUId, '', that.s[iHost].aliases);
-      sClientCache.notify(iReq, {type:'services', list:that.list(iHost)});
+      sClients.notify(iReq, {type:'services', list:that.list(iHost)});
     });
-  } ,
+  };
 
-  list: function(iHost) {
+  sServices.list = function(iHost) {
     var aSvc = {};
     for (var a in this.s) {
       if (iHost && iHost !== a)
@@ -752,9 +850,9 @@ var sServices = {
       aSvc[a] = { host:aS.host, joined:aS.joined, aliases:aS.aliases, comment:aS.comment, status:aS.status };
     }
     return aSvc;
-  } ,
+  };
 
-  hasAlias: function(iHost, iStr) {
+  sServices.hasAlias = function(iHost, iStr) {
     var aAls = this.s[iHost].aliases;
     if (!aAls)
       return false;
@@ -762,24 +860,24 @@ var sServices = {
     if (aI < 0 || aI > 0 && aAls.charAt(aI-1) !== ' ' || aI+iStr.length < aAls.length && aAls.charAt(aI+iStr.length) !== ' ')
       return false;
     return true;
-  } ,
+  };
 
-  listEdit: function(iHost, iList, iOp, iMember, iEtc, iMsg, iCallback) {
+  sServices.listEdit = function(iHost, iList, iOp, iMember, iEtc, iMsg, iCallback) {
     var aHead = { op:'listEdit', to:iList, type:iOp, member:iMember, etc:iEtc };
     this._queue(iHost, aHead, iMsg, iCallback);
-  } ,
+  };
 
-  listPost: function(iHost, iList, iEtc, iMsg, iCallback, iAll) {
+  sServices.listPost = function(iHost, iList, iEtc, iMsg, iCallback, iAll) {
     var aHead = { op:'post', to:{}, etc:iEtc };
     aHead.to[iList] = iAll || 2;
     this._queue(iHost, aHead, iMsg, iCallback);
-  } ,
+  };
 
-  listPostAll: function(iHost, iList, iEtc, iMsg, iCallback) {
+  sServices.listPostAll = function(iHost, iList, iEtc, iMsg, iCallback) {
     this.listPost(iHost, iList, iEtc, iMsg, iCallback, 3);
-  } ,
+  };
 
-  post: function(iHost, iTo, iEtc, iMsg, iCallback) {
+  sServices.post = function(iHost, iTo, iEtc, iMsg, iCallback) {
     var aHead = { op:(typeof iTo === 'string' ? 'ping' : 'post'), etc:iEtc };
     if (aHead.op === 'post') {
       for (var any in iTo) break;
@@ -790,9 +888,9 @@ var sServices = {
     }
     aHead[aHead.op === 'ping' ? 'alias' : 'to'] = iTo;
     this._queue(iHost, aHead, iMsg, iCallback);
-  } ,
+  };
 
-  _queue: function(iHost, iHead, iMsg, iCallback) {
+  sServices._queue = function(iHost, iHead, iMsg, iCallback) {
     iHead.id = Date.now().toString(); //. may need to append counter
     var aFile = sSendDir+iHost+'/'+iHead.id;
     fs.writeFile(aFile, MqClient.packMsg(iHead, iMsg), function(err) {
@@ -808,15 +906,15 @@ var sServices = {
         });
       });
     });
-  }
+  };
 
-}; // sServices
 
 var sAttachments = {
   open: {},
-  notify: null,
+  notify: null
+};
 
-  init: function() {
+  sAttachments.init = function() {
     var that = this;
     that.notify = new Inotify();
     that.notify.addWatch({path:sEditCache, watch_for:Inotify.IN_CREATE|Inotify.IN_MOVED_TO, callback: function(event) {
@@ -863,9 +961,9 @@ var sAttachments = {
       };
       aCheck(0);
     });
-  } ,
+  };
 
-  ready: function(iClient, iProject, iPage, iOid, iDocType, iCallback) {
+  sAttachments.ready = function(iClient, iProject, iPage, iOid, iDocType, iCallback) {
     if (iOid.indexOf('_') >= 0) {
       var aDocPath = sRevisionCache + iOid + iDocType;
       fs.symlink(iOid, aDocPath, function(err) { //. use .link()
@@ -885,7 +983,7 @@ var sAttachments = {
         that.open[iOid] = { docpath:{}, client:{}, id:null, onWrite: function(event) {
           if (event.mask & Inotify.IN_IGNORED)
             return;
-          sProjects.queueRequest({type:'writePart', client:null, project:iProject, page:iPage, part:iOid, data:null});
+          queueRequest({type:'writePart', client:null, project:iProject, page:iPage, part:iOid, data:null});
         }};
       that.open[iOid].docpath[aDocPath] = true;
       that.open[iOid].client[iClient] = true;
@@ -903,9 +1001,9 @@ var sAttachments = {
       else
         aLink();
     });
-  } ,
+  };
 
-  close: function(iClient) {
+  sAttachments.close = function(iClient) {
     for (var aOid in this.open) {
       if (!this.open[aOid].client[iClient])
         continue;
@@ -929,9 +1027,8 @@ var sAttachments = {
         delete this.open[aOid];
       }
     }
-  }
+  };
 
-}; // sAttachments
 
 var sProjects = {
   db: null,
@@ -942,10 +1039,10 @@ var sProjects = {
     INSERT INTO project VALUES ( ("+kNewOid+"), '', NULL, '{\"name\":\"Untitled\", \"blurb\":\"something\", \"created\":\"' || datetime('now') || '\"}', '{}' );\
     SELECT oid, dataw AS data, service, 1 AS installed FROM project WHERE rowid = last_insert_rowid();\
     COMMIT TRANSACTION;",
-  pj: { },
-  stmt: {},
+  stmt: {}
+};
 
-  init: function(iStart) {
+  sProjects.init = function(iStart) {
     var that = this;
     that.db = new sqlite.Database();
     that.db.open(sMainDir+'projects', function(openErr) {
@@ -955,15 +1052,15 @@ var sProjects = {
         iStart();
       });
     });
-  } ,
+  };
 
-  finalize: function() {
+  sProjects.finalize = function() {
     dbFinalize(this.stmt);
     this.db.close();
-  } ,
+  };
 
-  getClientNav: {},
-  handle_getClientNav: function(iReq) {
+  sProjects.getClientNav = {};
+  sProjects.handle_getClientNav = function(iReq) {
     var that = this;
     if (!that.stmt.getClientNav) {
       that.db.prepare("SELECT data FROM clients.clientNav WHERE client = ?", function(prepErr, stmt) {
@@ -979,12 +1076,12 @@ var sProjects = {
       that.stmt.getClientNav.reset();
       if (row)
         row.data = JSON.parse(row.data);
-      sRespond(iReq, row || {data:{sort:'name', history: {n:1, len:1, i: [{proj:'#autogen.01000', page:'#autogen.01010'}]}}});
+      sClients.respond(iReq, row || {data:{sort:'name', history: {n:1, len:1, i: [{proj:'#autogen.01000', page:'#autogen.01010'}]}}});
     });
-  } ,
+  };
 
-  setClientNav: { data:true },
-  handle_setClientNav: function(iReq) {
+  sProjects.setClientNav = { data:true };
+  sProjects.handle_setClientNav = function(iReq) {
     var that = this;
     if (!that.stmt.setClientNav) {
       that.db.prepare("INSERT OR REPLACE INTO clients.clientnav VALUES ( ?, ? )", function(prepErr, stmt) {
@@ -999,11 +1096,11 @@ var sProjects = {
     that.stmt.setClientNav.step(function(err, row) {
       if (err) throw err;
       that.stmt.setClientNav.reset();
-      sRespond(iReq, {status:'ok'});
+      sClients.respond(iReq, {status:'ok'});
     });
-  } ,
+  };
 
-  autogen: function(iJso, iCallback, iN) {
+  sProjects.autogen = function(iJso, iCallback, iN) {
     if (typeof iN === 'undefined')
       iN = 0;
     if (iN === iJso.length)
@@ -1045,10 +1142,10 @@ var sProjects = {
         });
       });
     });
-  } ,
+  };
 
-  importt: { from:true, jso:true, data:true },
-  handle_importt: function(iReq) {
+  sProjects.importt = { from:true, jso:true, data:true };
+  sProjects.handle_importt = function(iReq) {
     // this function must defend against attack
     // anyone on the service can send a message here with the user's alias
     var that = this;
@@ -1070,7 +1167,7 @@ var sProjects = {
         if (err) throw err;
         that.stmt.importInvite.select.reset();
         if (row && row.accept) {
-          sRespond(iReq, {});
+          sClients.respond(iReq, {});
           return;
         }
         that.stmt.importInvite.insert.bind(1, iReq.jso.date);
@@ -1083,7 +1180,7 @@ var sProjects = {
           if (err) throw err;
           that.stmt.importInvite.insert.reset();
           iReq.jso.data = JSON.parse(iReq.jso.data);
-          sClientCache.notify(iReq, iReq.jso);
+          sClients.notify(iReq, iReq.jso);
         });
       });
       return;
@@ -1120,7 +1217,7 @@ var sProjects = {
         });
       });
       function aQuit() {
-        sRespond(iReq, {});
+        sClients.respond(iReq, {});
       }
       function aFileLoop(fileN) {
         if (fileN < aFiles.length) {
@@ -1139,23 +1236,23 @@ var sProjects = {
           that.stmt.importProject.insert.reset();
           delete iReq.jso.filemap;
           iReq.jso.data = JSON.parse(iReq.jso.data);
-          sClientCache.notify(iReq, iReq.jso);
+          sClients.notify(iReq, iReq.jso);
         });
       }
       return;
 
     default:
       console.log('unknown import type: '+iReq.jso.type);
-      sRespond(iReq, {});
+      sClients.respond(iReq, {});
     }
-  } ,
+  };
 
-  setInstalled: function(iOid, iCallback) {
+  sProjects.setInstalled = function(iOid, iCallback) {
     dbExec(this.db, "UPDATE project SET localData = '{}' WHERE oid = '"+iOid+"'", noOpCallback, iCallback);
-  } ,
+  };
 
-  getList: {},
-  handle_getList: function(iReq) {
+  sProjects.getList = {};
+  sProjects.handle_getList = function(iReq) {
     var that = this;
     if (!that.stmt.getList) {
       that.db.prepare("SELECT oid, service, CASE WHEN dataw IS NULL THEN data ELSE dataw END AS data FROM project", function(prepErr, stmt) {
@@ -1166,12 +1263,12 @@ var sProjects = {
       return;
     }
     dbResults(that.stmt.getList, 'data', function(array) {
-      sRespond(iReq, {list:array});
+      sClients.respond(iReq, {list:array});
     });
-  } ,
+  };
 
-  getInvites: {},
-  handle_getInvites: function(iReq) {
+  sProjects.getInvites = {};
+  sProjects.handle_getInvites = function(iReq) {
     var that = this;
     if (!that.stmt.getInvites) {
       that.db.prepare("SELECT * FROM invite", function(err, stmt) {
@@ -1182,12 +1279,12 @@ var sProjects = {
       return;
     }
     dbResults(that.stmt.getInvites, 'data', function(array) {
-      sRespond(iReq, {list:array});
+      sClients.respond(iReq, {list:array});
     });
-  } ,
+  };
 
-  acceptInvite: { oid:true, service:true, to:true, alias:true },
-  handle_acceptInvite: function(iReq) {
+  sProjects.acceptInvite = { oid:true, service:true, to:true, alias:true };
+  sProjects.handle_acceptInvite = function(iReq) {
     var that = this;
     if (!that.stmt.acceptInvite) {
       that.db.prepare("UPDATE invite SET accept = ? WHERE oid = ?", function(err, stmt) {
@@ -1204,47 +1301,47 @@ var sProjects = {
       that.stmt.acceptInvite.step(function(err, row) {
         if (err) throw err;
         that.stmt.acceptInvite.reset();
-        sClientCache.notify(iReq, {type:'acceptinvite', oid:iReq.oid, accept:aDate});
+        sClients.notify(iReq, {type:'acceptinvite', oid:iReq.oid, accept:aDate});
       });
     });
-  } ,
+  };
 
-  newProject: {},
-  handle_newProject: function(iReq) {
+  sProjects.newProject = {};
+  sProjects.handle_newProject = function(iReq) {
     var aProj;
     dbExec(this.db, this.newSql, function(err, row) {
       if (err) throw err;
       if (row) aProj = row;
     }, function() {
-      sProjects.pj[aProj.oid] = new Project(aProj, function () {
-        sClientCache.project(iReq.client, aProj.oid);
+      Project.list[aProj.oid] = new Project(aProj, function () {
+        sClients.project(iReq.client, aProj.oid);
         aProj.data = JSON.parse(aProj.data);
         delete aProj.service;
         aProj.type = 'project';
-        sClientCache.notify(iReq, aProj);
+        sClients.notify(iReq, aProj);
       });
     });
-  } ,
+  };
 
-  readyAttachment: { uri:true, doctype:true },
-  handle_readyAttachment: function(iReq) {
+  sProjects.readyAttachment = { uri:true, doctype:true };
+  sProjects.handle_readyAttachment = function(iReq) {
     var aUri = url.parse(iReq.uri, true);
     sAttachments.ready(iReq.client, aUri.query.project, aUri.query.page, aUri.query.oid, iReq.doctype, function(path) {
-      sRespond(iReq, { path:path });
+      sClients.respond(iReq, { path:path });
     });
-  } ,
+  };
 
-  subscribeServices: {},
-  handle_subscribeServices: function(iReq) {
-    sRespond(iReq, {data:sServices.list()});
-  } ,
+  sProjects.subscribeServices = {};
+  sProjects.handle_subscribeServices = function(iReq) {
+    sClients.respond(iReq, {data:sServices.list()});
+  };
 
-  touchService: { host:true, aliases:true, comment:true },
-  handle_touchService: function(iReq) {
+  sProjects.touchService = { host:true, aliases:true, comment:true };
+  sProjects.handle_touchService = function(iReq) {
     sServices.touch(iReq.host, iReq.aliases, iReq.comment, iReq);
-  } ,
+  };
 
-  lookup: function(iOid, iCallback) {
+  sProjects.lookup = function(iOid, iCallback) {
     var that = this;
     if (!that.stmt.lookup) {
       that.db.prepare("SELECT oid, service, localData NOT NULL AS installed FROM project WHERE oid = ?", function(err, stmt) {
@@ -1271,113 +1368,8 @@ var sProjects = {
         iCallback(row && row.accept ? 'invite' : null);
       });
     });
-  } ,
+  };
 
-  queueRequest: function(iReq) {
-    if (sRecord)
-      sRecord.save(iReq);
-    if (!iReq.project || !this.pj[iReq.project]) {
-      if (this.queue.post(iReq))
-        this.processQueue(null, true);
-    } else {
-      if (this.pj[iReq.project].queue.post(iReq))
-        this.processQueue(iReq.project, true);
-    }
-  } ,
-
-  processQueue: function(iProject, iUseCurr) {
-    var aQ = iProject ? this.pj[iProject].queue : this.queue;
-    if (!iUseCurr)
-      aQ.next();
-    var aReq = aQ.curr();
-    if (!aReq) {
-      aReq = sPlayback && sPlayback.next();
-      if (aReq)
-        sProjects.queueRequest(aReq);
-      return;
-    }
-    if (aReq.project && !this.pj[aReq.project]) {
-      this.lookup(aReq.project, function(data) {
-        if (data === 'invite') {
-          var aBuf = MqClient.packMsg({type:aReq.type, client:null, project:aReq.project, from:aReq.from, jso:aReq.jso}, aReq.data);
-          storeFile(sInbound+aReq.project+'_'+Date.now(), aBuf, function(err) {
-            if (err) throw err;
-            sRespond(aReq, {}, 'noqueue');
-          });
-        } else if (data) {
-          sProjects.pj[aReq.project] = new Project(data, function() {
-            if (data.installed)
-              return aLastReq();
-            fs.readdir(sInbound, function(err, array) {
-              if (err) throw err;
-              array.sort();
-              var aIterDel, aIterN = 0;
-              aIter();
-              function aIter() {
-                if (aIterDel)
-                  fs.unlink(sInbound+aIterDel, noOpCallback);
-                while (aIterN < array.length && array[aIterN].slice(0, array[aIterN].lastIndexOf('_')) !== aReq.project) ++aIterN;
-                if (aIterN < array.length) {
-                  aIterDel = array[aIterN];
-                  fs.readFile(sInbound+array[aIterN++], function(err, buffer) {
-                    if (err) throw err;
-                    var aR = MqClient.unpackMsg(buffer);
-                    aR.callback = aIter;
-                    aR.data = aR._buf;
-                    delete aR._buf;
-                    sProjects.pj[aReq.project].queue.post(aR);
-                    sProjects.processQueue(aReq.project, true);
-                  });
-                  return;
-                }
-                sProjects.setInstalled(aReq.project, aLastReq);
-              }
-            });
-            function aLastReq() {
-              sProjects.pj[aReq.project].queue.post(aReq);
-              sProjects.processQueue(aReq.project, true);
-            }
-          });
-        } else
-          sRespond(aReq, {error:'Request against invalid Project oid'}, 'noqueue');
-        sProjects.processQueue();
-      });
-      return;
-    }
-    try {
-    if (!aReq.hasOwnProperty('client'))
-      throw 'client';
-    var aHandler = 'handle_'+aReq.type;
-    if (aHandler in this) {
-      for (a in this[aReq.type])
-        if (!aReq.hasOwnProperty(a))
-          throw a;
-      this[aHandler](aReq);
-    } else {
-      if (!aReq.hasOwnProperty('project'))
-        throw 'project';
-      if (aHandler in this.pj[aReq.project]) {
-        for (a in this.pj[aReq.project][aReq.type])
-          if (a === 'autogen' ? /^#autogen/.test(aReq.project) : !aReq.hasOwnProperty(a))
-            throw a;
-        this.pj[aReq.project][aHandler](aReq);
-      } else {
-        throw 'unknown Project request '+aReq.type;
-      }
-    }
-    } catch (aErr) {
-      if (typeof aErr === 'object')
-        throw aErr;
-      sRespond(aReq, {error: aReq.type + (aErr === 'autogen' ? ' illegal for autogen project' : ' request missing parameter '+aErr)});
-    }
-  } ,
-
-  unloadProject: function(iName) {
-    this.pj[iName].finalize();
-    delete this.pj[iName];
-  }
-
-} // sProjects
 
 function Project(iRecord, iCallback) {
   this.oid = iRecord.oid;
@@ -1446,15 +1438,15 @@ function Project(iRecord, iCallback) {
   });
 }
 
-Project.prototype = {
+  Project.list = {};
 
-  finalize: function() {
-    for (var a in this.stmt)
-      this.stmt[a].finalize();
+  Project.prototype.finalize = function() {
+    dbFinalize(this.stmt);
     this.db.close();
-  } ,
+    delete Project.list[this.oid];
+  };
 
-  schema: {
+  Project.prototype.schema = {
     instance: {},
     projects: {},
     filename: {
@@ -1493,10 +1485,10 @@ Project.prototype = {
         state: 'text'      // json { ... }
       }
     }
-  } ,
+  };
 
-  projectImport: { autogen:true, from:true, jso:true, data:true },
-  handle_projectImport: function(iReq) {
+  Project.prototype.projectImport = { autogen:true, from:true, jso:true, data:true };
+  Project.prototype.handle_projectImport = function(iReq) {
     var that = this;
     switch(iReq.jso.type) {
 
@@ -1525,11 +1517,11 @@ Project.prototype = {
           if (err) throw err;
           if (row) {
             row.type = aMa.uid === sUUId ? 'setuseralias' : 'memberalias';
-            aNotify = function() { sClientCache.notify(iReq, row, that.oid) };
+            aNotify = function() { sClients.notify(iReq, row, that.oid) };
           }
         }, aCircInvite);
         function aCircInvite() {
-          if (!aNotify) aNotify = function() { sRespond(iReq, {}) };
+          if (!aNotify) aNotify = function() { sClients.respond(iReq, {}) };
           if (aMa.invite && aMa.invite !== 'invalid')
             sServices.listPost(that.service, that.oid, { type:'memberAlias', project:that.oid, alias:aMa.alias }, null, aNotify);
           else if (iReq.from === sUUId && aMa.uid && aMa.uid !== sUUId)
@@ -1548,11 +1540,11 @@ Project.prototype = {
       }, function() {
         if (!aMember || aMember.left || aMember.uid && aMember.uid !== iReq.jso.uid) {
           console.log('got acceptInvite for invalid member: '+sys.inspect(aMember))
-          sRespond(iReq, {});
+          sClients.respond(iReq, {});
           return; //. log error
         }
         sServices.listEdit(that.service, that.oid, 'add', iReq.from, {type:'memberAlias', project:that.oid, uid:iReq.from, alias:iReq.jso.alias}, null, function() {
-          sRespond(iReq, {});
+          sClients.respond(iReq, {});
         });
       });
       return;
@@ -1566,7 +1558,7 @@ Project.prototype = {
           if (row) aOk = row.hasmem ? true : false;
         }, function() {
           if (!aOk) {
-            sRespond(iReq, {});
+            sClients.respond(iReq, {});
             console.log('skip rev '+iReq.jso.oid+' from '+iReq.from);
             return;
           }
@@ -1608,7 +1600,7 @@ console.log(partlist);
           case 'proj':
             var aData = JSON.parse(aDiff).add;
             dbExec(that.db, "UPDATE projects.project SET data = '"+JSON.stringify(aData)+"' WHERE oid = '"+that.oid+"';", noOpCallback, function() {
-              sClientCache.notify(null, {type:'projectdata', oid:that.oid, data:aData});
+              sClients.notify(null, {type:'projectdata', oid:that.oid, data:aData});
               aSetDiff(aDiff);
             });
             break;
@@ -1678,7 +1670,7 @@ console.log(partlist);
           else
             aDone();
           function aDone() {
-            sClientCache.notify(iReq, aNotify, that.oid);
+            sClients.notify(iReq, aNotify, that.oid);
           }
         });
       }
@@ -1686,9 +1678,9 @@ console.log(partlist);
     default:
       throw new Error('unknown import type: '+iReq.jso.type);
     }
-  } ,
+  };
 
-  sendProject: function(iTo, iCallback) {
+  Project.prototype.sendProject = function(iTo, iCallback) {
     var that = this;
     var aMsgHead;
     dbExec(this.db, "SELECT oid, service, data FROM projects.project WHERE oid = '"+this.oid+"';", function(err, row) {
@@ -1752,9 +1744,9 @@ console.log(partlist);
         });
       });
     });
-  } ,
+  };
 
-  checkConflict: function(iRevision, iCallback, iConflict, iChain) {
+  Project.prototype.checkConflict = function(iRevision, iCallback, iConflict, iChain) {
     var that = this;
     if (!that.stmt.checkConflict) {
       that.stmt.checkConflict = {
@@ -2004,9 +1996,9 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
         });
       }
     });  
-  } ,
+  };
 
-  getMembers: function(iAppendArgs, iCallback) {
+  Project.prototype.getMembers = function(iAppendArgs, iCallback) {
     var that = this;
     var argv = arguments;
     if (!that.stmt.members) {
@@ -2026,10 +2018,10 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
           aToList[argv[a]] = true;
       argv[argv.length-1](aToList);
     });
-  } ,
+  };
 
-  postMsg: { msg:true },
-  handle_postMsg: function(iReq) {
+  Project.prototype.postMsg = { msg:true };
+  Project.prototype.handle_postMsg = function(iReq) {
     var that = this;
     if (!that.stmt.msgPost) {
       this.db.prepare("INSERT INTO message VALUES ( datetime('now'), ? )", function(prepErr, stmt) {
@@ -2049,13 +2041,13 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
         if (row) aMsg = row;
       }, function() {
         aMsg.type = 'message';
-        sClientCache.notify(iReq, aMsg, that.oid);
+        sClients.notify(iReq, aMsg, that.oid);
       });
     });
-  } ,
+  };
 
-  getMsgList: {},
-  handle_getMsgList: function(iReq) {
+  Project.prototype.getMsgList = {};
+  Project.prototype.handle_getMsgList = function(iReq) {
     var that = this;
     if (!that.stmt.msgList) {
       this.db.prepare("SELECT * FROM message ORDER BY date DESC", function(prepErr, stmt) {
@@ -2066,12 +2058,12 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
       return;
     }
     dbResults(that.stmt.msgList, function(array) {
-      sRespond(iReq, {list:array});
+      sClients.respond(iReq, {list:array});
     });
-  } ,
+  };
 
-  setClientState: { data:true },
-  handle_setClientState: function(iReq) {
+  Project.prototype.setClientState = { data:true };
+  Project.prototype.handle_setClientState = function(iReq) {
     var that = this;
     if (!that.stmt.setState) {
       that.db.prepare("INSERT OR REPLACE INTO clientstate VALUES ( ?, ? )", function(prepErr, stmt) {
@@ -2086,21 +2078,21 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
     that.stmt.setState.step(function(stepErr, row) {
       if (stepErr) throw stepErr;
       that.stmt.setState.reset();
-      sRespond(iReq, {status:'ok'});
+      sClients.respond(iReq, {status:'ok'});
     });
-  } ,
+  };
 
-  setService: { autogen:true, service:true },
-  handle_setService: function(iReq) {
+  Project.prototype.setService = { autogen:true, service:true };
+  Project.prototype.handle_setService = function(iReq) {
     var that = this;
     dbExec(that.db, "UPDATE projects.project SET service = '"+iReq.service+"' WHERE oid = '"+that.oid+"'", noOpCallback, function() {
       that.service = iReq.service;
-      sClientCache.notify(iReq, {type:'setservice', service:iReq.service}, that.oid);
+      sClients.notify(iReq, {type:'setservice', service:iReq.service}, that.oid);
     });
-  } ,
+  };
 
-  setUseralias: { autogen:true, alias:true },
-  handle_setUseralias: function(iReq) {
+  Project.prototype.setUseralias = { autogen:true, alias:true };
+  Project.prototype.handle_setUseralias = function(iReq) {
     var that = this;
     var aUpdt = { type:'memberAlias', project:that.oid, alias:iReq.alias, uid:sUUId };
     sServices.listPostAll(that.service, that.oid, aUpdt, null, function() {
@@ -2108,13 +2100,13 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
                        INSERT OR IGNORE INTO member VALUES ( '"+sUUId+"', '"+iReq.alias+"', '"+(new Date).toISOString()+"', NULL );\
                        UPDATE member SET alias = '"+iReq.alias+"' WHERE uid = '"+sUUId+"';\
                        COMMIT TRANSACTION;", noOpCallback, function() {
-        sClientCache.notify(iReq, {type:'setuseralias', alias:iReq.alias}, that.oid);
+        sClients.notify(iReq, {type:'setuseralias', alias:iReq.alias}, that.oid);
       });
     });
-  } ,
+  };
 
-  addMember: { autogen:true, alias:true },
-  handle_addMember: function(iReq) {
+  Project.prototype.addMember = { autogen:true, alias:true };
+  Project.prototype.handle_addMember = function(iReq) {
     var that = this;
     if (!that.stmt.addMember) {
       that.db.prepare("INSERT INTO member VALUES ( NULL, ?, ?, NULL )", function(prepErr, stmt) {
@@ -2125,14 +2117,14 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
       return;
     }
     if (!that.service)
-      return sRespond(iReq, {error:'addMember requires an active service'});
+      return sClients.respond(iReq, {error:'addMember requires an active service'});
     var aUseralias;
     dbExec(that.db, "SELECT alias FROM member WHERE uid = '"+sUUId+"'", function(err, row) {
       if (err) throw err;
       if (row) aUseralias = row.alias;
     }, function() {
       if (!aUseralias || !sServices.hasAlias(that.service, aUseralias))
-        return sRespond(iReq, {error:'addMember requires a user alias'});
+        return sClients.respond(iReq, {error:'addMember requires a user alias'});
       var aInvite;
       dbExec(that.db, "SELECT service, data FROM projects.project WHERE oid='"+that.oid+"'", function(err, row) {
         if (err) throw err;
@@ -2140,7 +2132,7 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
                              oid:that.oid, service:row.service, data:row.data };
       }, function() {
         if (!aInvite.data)
-          return sRespond(iReq, {error:'addMember requires a project with a revision'});
+          return sClients.respond(iReq, {error:'addMember requires a project with a revision'});
         sServices.post(aInvite.service, iReq.alias, aInvite, null, function() {
           var aDate = (new Date).toISOString();
           that.stmt.addMember.bind(1, iReq.alias);
@@ -2148,15 +2140,15 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
           that.stmt.addMember.step(function(stepErr, row) {
             if (stepErr) throw stepErr;
             that.stmt.addMember.reset();
-            sClientCache.notify(iReq, {type:'memberalias', alias:iReq.alias, uid:null, joined:aDate, left:null}, that.oid);
+            sClients.notify(iReq, {type:'memberalias', alias:iReq.alias, uid:null, joined:aDate, left:null}, that.oid);
           });
         });
       });
     });
-  } ,
+  };
 
-  resign: { autogen:true },
-  handle_resign: function(iReq) {
+  Project.prototype.resign = { autogen:true };
+  Project.prototype.handle_resign = function(iReq) {
     var that = this;
     var aDel = { type:'memberAlias', project:that.oid, uid:sUUId, resign:true };
     sServices.listEdit(that.service, that.oid, 'remove', sUUId, aDel, null, function() {
@@ -2167,13 +2159,13 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
         if (row) aRow = row;
       }, function() {
         aRow.type = 'memberalias';
-        sClientCache.notify(iReq, aRow, that.oid);
+        sClients.notify(iReq, aRow, that.oid);
       });
     });
-  } ,
+  };
 
-  subscribe: {},
-  handle_subscribe: function(iReq) {
+  Project.prototype.subscribe = {};
+  Project.prototype.handle_subscribe = function(iReq) {
     var that = this;
     if (!that.stmt.pageList) {
       that.db.prepare("SELECT oid, CASE WHEN dataw IS NULL THEN data ELSE dataw END AS data FROM page", function(prepErr, stmt) {
@@ -2215,17 +2207,17 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
               if (err) throw err;
               that.stmt.getProjectData.reset();
               aResult.data = JSON.parse(row.data);
-              sRespond(iReq, aResult);
+              sClients.respond(iReq, aResult);
             });
           });
         });
       });
     });
-    sClientCache.project(iReq.client, this.oid);
-  } ,
+    sClients.project(iReq.client, this.oid);
+  };
 
-  write: { autogen:true, data:true },
-  handle_write: function(iReq) {
+  Project.prototype.write = { autogen:true, data:true };
+  Project.prototype.handle_write = function(iReq) {
     var that = this;
     if (!that.stmt.updateData) {
       that.db.prepare("UPDATE projects.project SET dataw = ? WHERE oid = '"+that.oid+"'", function(prepErr, stmt) {
@@ -2246,22 +2238,22 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
           if (stepErr) throw stepErr;
           that.stmt.setRevisionMap.reset();
           dbExec(that.db, "COMMIT TRANSACTION", noOpCallback, function() {
-            sClientCache.notify(iReq.client, {type:'projectdata', oid:that.oid, data:iReq.data});
-            sRespond(iReq, {status:'ok'});
+            sClients.notify(iReq.client, {type:'projectdata', oid:that.oid, data:iReq.data});
+            sClients.respond(iReq, {status:'ok'});
           });
         });
       });
     });
-  } ,
+  };
 
-  sqlNewPage: "\
+  Project.prototype.sqlNewPage = "\
     BEGIN TRANSACTION;\
     "+kIncrOid+";\
     INSERT INTO page VALUES ( ("+kNewOid+"), NULL, '{\"name\":\"Untitled\", \"added\":\"' || datetime('now') || '\"}', NULL, '[]' );\
-    SELECT oid, dataw AS data FROM page WHERE rowid = last_insert_rowid();" ,
+    SELECT oid, dataw AS data FROM page WHERE rowid = last_insert_rowid();";
 
-  newPage: { autogen:true },
-  handle_newPage: function(iReq, iCallback) {
+  Project.prototype.newPage = { autogen:true };
+  Project.prototype.handle_newPage = function(iReq, iCallback) {
     var aPage;
     var that = this;
     dbExec(this.db, this.sqlNewPage, function(stepErr, row) {
@@ -2277,17 +2269,17 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
         dbExec(that.db, "COMMIT TRANSACTION", function(err, row) {
           if (err) throw err;
         }, iCallback || function() {
-          sClientCache.page(iReq.client, that.oid, aPage.oid);
+          sClients.page(iReq.client, that.oid, aPage.oid);
           aPage.data = JSON.parse(aPage.data);
           aPage.type = 'page';
-          sClientCache.notify(iReq, aPage, that.oid);
+          sClients.notify(iReq, aPage, that.oid);
         });
       });
     });
-  } ,
+  };
 
-  subscribePage: { page:true },
-  handle_subscribePage: function(iReq) {
+  Project.prototype.subscribePage = { page:true };
+  Project.prototype.handle_subscribePage = function(iReq) {
     var that = this;
     if (!that.stmt.subscribePage) {
       that.db.prepare("SELECT oid, CASE WHEN dataw   IS NULL THEN data   ELSE dataw   END AS data,\
@@ -2302,16 +2294,16 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
     that.stmt.subscribePage.step(function(stepErr, row) {
       if (stepErr) throw stepErr;
       that.stmt.subscribePage.reset();
-      sClientCache.page(iReq.client, that.oid, iReq.page);
+      sClients.page(iReq.client, that.oid, iReq.page);
       row.layout = JSON.parse(row.layout);
       row.data = JSON.parse(row.data);
-      sRespond(iReq, row, 'sequence');
+      sClients.respond(iReq, row, 'sequence');
       that._sendParts(row.layout, 0, iReq);
     });
-  } ,
+  };
 
-  writePage: { autogen:true, page:true, data:true },
-  handle_writePage: function(iReq) {
+  Project.prototype.writePage = { autogen:true, page:true, data:true };
+  Project.prototype.handle_writePage = function(iReq) {
     var that = this;
     if (!that.stmt.writePage) {
       that.db.prepare("UPDATE page SET dataw = CASE WHEN ?1 IS NULL THEN dataw ELSE ?1 END,\
@@ -2340,16 +2332,16 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
           that.stmt.setRevisionMap.reset();
           dbExec(that.db, "COMMIT TRANSACTION", noOpCallback, function() {
             iReq.data.type = 'pagedata';
-            sClientCache.notify(iReq.client, iReq.data, that.oid, !iReq.data.data && iReq.page);
-            sRespond(iReq, {status:'ok'});
+            sClients.notify(iReq.client, iReq.data, that.oid, !iReq.data.data && iReq.page);
+            sClients.respond(iReq, {status:'ok'});
           });
         });
       });
     });
-  } ,
+  };
 
-  readPageRevision: { page:true, revision:true },
-  handle_readPageRevision: function(iReq, iData) {
+  Project.prototype.readPageRevision = { page:true, revision:true };
+  Project.prototype.handle_readPageRevision = function(iReq, iData) {
     var that = this;
     if (!that.stmt.getPage) {
       that.db.prepare("SELECT data, layout FROM page WHERE oid = ?", function(prepErr, stmt) {
@@ -2375,7 +2367,7 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
           fs.readFile(aCachedPg, 'utf8', function(fileErr, data) {
             if (fileErr) throw fileErr;
             var aPg = JSON.parse(data);
-            sRespond(iReq, aPg, 'sequence');
+            sClients.respond(iReq, aPg, 'sequence');
             that._sendParts(aPg.layout, 0, iReq);
           });
           return;
@@ -2412,7 +2404,7 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
           iData.revision = iReq.revision;
           fs.writeFile(aCachedPg, JSON.stringify(iData), 'utf8', function(fileErr) {
             if (fileErr) throw fileErr;
-            sRespond(iReq, iData, 'sequence');
+            sClients.respond(iReq, iData, 'sequence');
             that._sendParts(iData.layout, 0, iReq);
           });
         }
@@ -2472,13 +2464,13 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
         that.handle_readPageRevision(iReq, iData);
       }
     });
-  } ,
+  };
 
-  unpatch: function(iOrig, iDiff) {
+  Project.prototype.unpatch = function(iOrig, iDiff) {
     this.patch(iOrig, iDiff, true);
-  } ,
+  };
 
-  patch: function(iOrig, iDiff, iUndo) {
+  Project.prototype.patch = function(iOrig, iDiff, iUndo) {
     var aAdd = iDiff[iUndo ? 'del' : 'add'];
     var aDel = iDiff[iUndo ? 'add' : 'del'];
     if (aAdd.data)
@@ -2491,16 +2483,16 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
       for (var a=0; a < aAdd.layout.length; ++a)
         iOrig.layout.push(aAdd.layout[a]);
     }
-  } ,
+  };
 
-  sqlNewPart: "\
+  Project.prototype.sqlNewPart = "\
     BEGIN TRANSACTION;\
     "+kIncrOid+"; "+kNewOid+";\
     "+kIncrOid+"; "+kNewOid+";\
-    COMMIT TRANSACTION;",
+    COMMIT TRANSACTION;";
 
-  newPart: { autogen:true },
-  handle_newPart: function(iReq) {
+  Project.prototype.newPart = { autogen:true };
+  Project.prototype.handle_newPart = function(iReq) {
     var that = this;
     var aNewOid = {};
     dbExec(this.db, this.sqlNewPart, function(stepErr, row) {
@@ -2512,15 +2504,15 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
           aNewOid.a = row.oid;
     }, function() {
         //. log oids to verify writePart
-        sRespond(iReq, aNewOid);
+        sClients.respond(iReq, aNewOid);
     });
-  } ,
+  };
 
-  _sendParts: function(iList, iIdx, iReq) {
+  Project.prototype._sendParts = function(iList, iIdx, iReq) {
     while (iIdx < iList.length && (!iList[iIdx].oid || iList[iIdx].outofband))
       ++iIdx;
     if (iIdx >= iList.length) {
-      sProjects.processQueue(iReq.project);
+      processQueue(iReq.project);
       return;
     }
     var that = this;
@@ -2528,14 +2520,14 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
     fs.stat(aPath+'.w', function(statErr, stats) {
       fs.readFile(statErr ? aPath : aPath+'.w', 'utf8', function(fileErr, buffer) {
         if (!fileErr)
-          sRespond(iReq, {type:'update', id:iReq.id+'+', list:[{type:'part', oid:iList[iIdx].oid, data:buffer}]}, 'sequence');
+          sClients.respond(iReq, {type:'update', id:iReq.id+'+', list:[{type:'part', oid:iList[iIdx].oid, data:buffer}]}, 'sequence');
         that._sendParts(iList, ++iIdx, iReq);
       });
     });
-  } ,
+  };
 
-  writePart: { autogen:true, page:true, part:true, data:true },
-  handle_writePart: function(iReq) {
+  Project.prototype.writePart = { autogen:true, page:true, part:true, data:true };
+  Project.prototype.handle_writePart = function(iReq) {
     var that = this;
     var aPath = makePath(iReq.part);
     var aMap = function() {
@@ -2549,8 +2541,8 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
         that.stmt.setRevisionMap.step(function(stepErr, row) {
           if (stepErr) throw stepErr;
           that.stmt.setRevisionMap.reset();
-          sClientCache.notify(iReq.client, {type:'part', oid:iReq.part, data:Buffer.isBuffer(iReq.data) ? null : iReq.data}, that.oid, iReq.page);
-          sRespond(iReq, {status:'ok'});
+          sClients.notify(iReq.client, {type:'part', oid:iReq.part, data:Buffer.isBuffer(iReq.data) ? null : iReq.data}, that.oid, iReq.page);
+          sClients.respond(iReq, {status:'ok'});
         });
       });
     };
@@ -2561,9 +2553,9 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
       });
     else
       aMap();
-  } ,
+  };
 
-  _makeDiffs: function(iRev, iBufList, iDiffList, iCallback) {
+  Project.prototype._makeDiffs = function(iRev, iBufList, iDiffList, iCallback) {
     var that = this;
     if (!that.stmt.insertDiff) {
       that.db.prepare("INSERT INTO diff VALUES ( ?, ?, ? )", function(err, stmt) {
@@ -2689,19 +2681,19 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
     } else {
       iCallback();
     }
-  } ,
+  };
 
-  revisionMapInit: {touch:null, page:{}},
-  revisionMapJson: function() {
+  Project.prototype.revisionMapInit = {touch:null, page:{}};
+  Project.prototype.revisionMapJson = function() {
     return JSON.stringify({touch:(new Date).toISOString(), page:{}});
-  } ,
+  };
 
-  commitRevision: { autogen:true },
-  handle_commitRevision: function(iReq, iNoSendCallback) {
+  Project.prototype.commitRevision = { autogen:true };
+  Project.prototype.handle_commitRevision = function(iReq, iNoSendCallback) {
     if (!this.revisionMap.touch) {
       for (var any in this.revisionMap.page) break;
       if (!any)
-        return sRespond(iReq, {status:'ok'});
+        return sClients.respond(iReq, {status:'ok'});
     }
     var aSql = "\
       SAVEPOINT commit_revision;\
@@ -2759,15 +2751,15 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
             that._finishRevision(that.db, that.revisionMap, rev, revdata, function() {
               that.revisionMap = that.revisionMapInit;
               delete aRev.list;
-              sClientCache.notify(iReq, aRev, that.oid);
+              sClients.notify(iReq, aRev, that.oid);
             });
           });
         }
       }
     });
-  } ,
+  };
 
-  _finishRevision: function (iDb, iMap, iRev, iRevData, iCallback) {
+  Project.prototype._finishRevision = function (iDb, iMap, iRev, iRevData, iCallback) {
     var that = this;
     if (iMap.page.sideline) {
       var aSide = iMap.page.sideline
@@ -2813,41 +2805,41 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
     function aUpdate() {
       dbExec(iDb, "UPDATE revision SET oid = substr(oid, 2)"+(aSetMap||'')+" WHERE oid LIKE '!%'", noOpCallback, iCallback);
     }
-  }
+  };
 
-}; // Project.prototype
 
-var sClientCache = {
-  cl: {},
+var sClients = {
+  cl: {}
+};
 
-  drop: function(iClient, iProj, iPage) { // invoked by client
+  sClients.drop = function(iClient, iProj, iPage) { // invoked by client
     delete (iPage ? this.cl[iClient].project[iProj][iPage] : this.cl[iClient].project[iProj]);
-  } ,
+  };
 
-  client: function(iClient, iConnection) {
+  sClients.client = function(iClient, iConnection) {
     if (iConnection)
       this.cl[iClient] = { connection:iConnection, project:{} };
     else
       delete this.cl[iClient];
-  } ,
+  };
 
-  project: function(iClient, iProj) {
+  sClients.project = function(iClient, iProj) {
     if (!iClient) // playback
       return;
     if (!this.cl[iClient].project[iProj])
       this.cl[iClient].project[iProj] = {};
     this.cl[iClient].project[iProj].current = true;
-  } ,
+  };
 
-  page: function(iClient, iProj, iPage) {
+  sClients.page = function(iClient, iProj, iPage) {
     if (!iClient) // playback
       return;
     if (!this.cl[iClient].project[iProj][iPage])
       this.cl[iClient].project[iProj][iPage] = {};
     this.cl[iClient].project[iProj][iPage].current = true;
-  } ,
+  };
 
-  notify: function(iReqOrSkip, iData, iProj, iPage) {
+  sClients.notify = function(iReqOrSkip, iData, iProj, iPage) {
     var aMsg = { type:'update', project:iProj, list: (iData instanceof Array ? iData : [iData]) };
     var aC = iReqOrSkip && iReqOrSkip.type ? iReqOrSkip.client : iReqOrSkip;
     for (var a in this.cl) {
@@ -2864,32 +2856,30 @@ var sClientCache = {
     if (iReqOrSkip && iReqOrSkip.type) {
       if (iReqOrSkip.callback)
         iReqOrSkip.callback();
-      sProjects.processQueue(iReqOrSkip.project);
+      processQueue(iReqOrSkip.project);
     }
-  }
+  };
 
-}; // sClientCache
-
-function sRespond(iReq, iData, iNoContinue) {//. avoid overlap in iData members and response members
-  if (iReq.response) {
-    iReq.response.writeHead(200);
-    iReq.response.end(iData.error || iData.status);
-  } else if (iReq.connection) {
-    if (!iData.id)
-      iData.id = iReq.id;
-    if (!iData.type)
-      iData.type = iReq.type;
-    if (iReq.project)
-      iData.project = iReq.project;
-    iReq.connection.send(JSON.stringify(iData));
-  } else if (iReq.callback) {
-    if (iData.error)
-      throw new Error(iData.error);
-    iReq.callback();
-  }
-  if (!iNoContinue)
-    sProjects.processQueue(iReq.project);
-}
+  sClients.respond = function(iReq, iData, iNoContinue) {//. avoid overlap in iData members and response members
+    if (iReq.response) {
+      iReq.response.writeHead(200);
+      iReq.response.end(iData.error || iData.status);
+    } else if (iReq.connection) {
+      if (!iData.id)
+        iData.id = iReq.id;
+      if (!iData.type)
+        iData.type = iReq.type;
+      if (iReq.project)
+        iData.project = iReq.project;
+      iReq.connection.send(JSON.stringify(iData));
+    } else if (iReq.callback) {
+      if (iData.error)
+        throw new Error(iData.error);
+      iReq.callback();
+    }
+    if (!iNoContinue)
+      processQueue(iReq.project);
+  };
 
 // main
 main();

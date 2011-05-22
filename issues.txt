@@ -3,11 +3,8 @@ Elembe Issues
 code cleanup
   Use prepared stmts when including parameters from relay messages
   use dbPrepare for multiple prepares
-  class.prototype.function_name = function() ...
-  move queue routines out of sProjects
-  move pj list to Project.list
-  sClientCache to sClients; sRespond to sClients.respond
-    respond check that client exists
+  sClients.respond check that client exists
+  replace literals with constants
 
 verify request parameter types
 verify client message parameters
