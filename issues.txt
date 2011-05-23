@@ -2,7 +2,6 @@ Elembe Issues
 
 code cleanup
   Use prepared stmts when including parameters from relay messages
-  use dbPrepare for multiple prepares
   replace literals with constants
 
 verify request parameter types

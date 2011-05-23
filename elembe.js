@@ -1341,27 +1341,26 @@ var sProjects = {
   sProjects.lookup = function(iOid, iCallback) {
     var that = this;
     if (!that.stmt.lookup) {
-      that.db.prepare("SELECT oid, service, localData NOT NULL AS installed FROM project WHERE oid = ?", function(err, stmt) {
+      that.stmt.lookup = {
+        project: "SELECT oid, service, localData NOT NULL AS installed FROM project WHERE oid = ?",
+        invite: "SELECT accept FROM invite WHERE oid = ?"
+      };
+      dbPrepare(that.db, that.stmt.lookup, function(err) {
         if (err) throw err;
-        that.stmt.lookup = stmt;
-        that.db.prepare("SELECT accept FROM invite WHERE oid = ?", function(err, stmt) {
-          if (err) throw err;
-          that.stmt.lookupInvite = stmt;
-          that.lookup(iOid, iCallback);
-        });
+        that.lookup(iOid, iCallback);
       });
       return;
     }
-    that.stmt.lookup.bind(1, iOid);
-    that.stmt.lookup.step(function(err, row) {
+    that.stmt.lookup.project.bind(1, iOid);
+    that.stmt.lookup.project.step(function(err, row) {
       if (err) throw err;
-      that.stmt.lookup.reset();
+      that.stmt.lookup.project.reset();
       if (row)
         return iCallback(row);
-      that.stmt.lookupInvite.bind(1, iOid);
-      that.stmt.lookupInvite.step(function(err, row) {
+      that.stmt.lookup.invite.bind(1, iOid);
+      that.stmt.lookup.invite.step(function(err, row) {
         if (err) throw err;
-        that.stmt.lookupInvite.reset();
+        that.stmt.lookup.invite.reset();
         iCallback(row && row.accept ? 'invite' : null);
       });
     });
@@ -2164,45 +2163,33 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
   Project.prototype.subscribe = {};
   Project.prototype.handle_subscribe = function(iReq) {
     var that = this;
-    if (!that.stmt.pageList) {
-      that.db.prepare("SELECT oid, CASE WHEN dataw IS NULL THEN data ELSE dataw END AS data FROM page", function(prepErr, stmt) {
-        if (prepErr) throw prepErr;
-        that.stmt.pageList = stmt;
-        that.db.prepare("SELECT alias, joined, left, uid, uid='"+sUUId+"' AS useralias FROM member", function(prepErr, stmt) {
-          if (prepErr) throw prepErr
-          that.stmt.memberList = stmt;
-          that.db.prepare("SELECT * FROM revision WHERE oid != ' ' ORDER BY date", function(prepErr, stmt) {
-            if (prepErr) throw prepErr;
-            that.stmt.revisionList = stmt;
-            that.db.prepare("SELECT state FROM clientstate WHERE client = ?", function(prepErr, stmt) {
-              if (prepErr) throw prepErr;
-              that.stmt.getState = stmt;
-              that.db.prepare("SELECT CASE WHEN dataw IS NULL THEN data ELSE dataw END AS data FROM projects.project WHERE oid = '"+that.oid+"'", function(prepErr, stmt) {
-                if (prepErr) throw prepErr;
-                that.stmt.getProjectData = stmt;
-                that.handle_subscribe(iReq);
-              });
-            });
-          });
-        });
+    if (!that.stmt.subscribe) {
+      that.stmt.subscribe = {
+        pageList: "SELECT oid, CASE WHEN dataw IS NULL THEN data ELSE dataw END AS data FROM page",
+        memberList: "SELECT alias, joined, left, uid, uid='"+sUUId+"' AS useralias FROM member",
+        revisionList: "SELECT * FROM revision WHERE oid != ' ' ORDER BY date",
+        getState: "SELECT state FROM clientstate WHERE client = ?",
+        getProjectData: "SELECT CASE WHEN dataw IS NULL THEN data ELSE dataw END AS data FROM projects.project WHERE oid = '"+that.oid+"'"
+      };
+      dbPrepare(that.db, that.stmt.subscribe, function(err) {
+        if (err) throw err;
+        that.handle_subscribe(iReq);
       });
       return;
     }
-    var aResult = { service:that.service };
-    dbResults(that.stmt.pageList, 'data', function(array) {
-      aResult.page = array;
-      dbResults(that.stmt.memberList, function(array) {
-        aResult.member = array;
-        dbResults(that.stmt.revisionList, 'map', function(array) {
-          aResult.revision = array;
-          that.stmt.getState.bind(1, iReq.client);
-          that.stmt.getState.step(function(stepErr, row) {
+    sClients.project(iReq.client, this.oid);
+    dbResults(that.stmt.subscribe.pageList, 'data', function(page) {
+      dbResults(that.stmt.subscribe.memberList, function(member) {
+        dbResults(that.stmt.subscribe.revisionList, 'map', function(revision) {
+          var aResult = { service:that.service, page:page, member:member, revision:revision, state:null, data:null };
+          that.stmt.subscribe.getState.bind(1, iReq.client);
+          that.stmt.subscribe.getState.step(function(stepErr, row) {
             if (stepErr) throw stepErr;
-            that.stmt.getState.reset();
+            that.stmt.subscribe.getState.reset();
             aResult.state = row ? JSON.parse(row.state) : null;
-            that.stmt.getProjectData.step(function(err, row) {
+            that.stmt.subscribe.getProjectData.step(function(err, row) {
               if (err) throw err;
-              that.stmt.getProjectData.reset();
+              that.stmt.subscribe.getProjectData.reset();
               aResult.data = JSON.parse(row.data);
               sClients.respond(iReq, aResult);
             });
@@ -2210,7 +2197,6 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
         });
       });
     });
-    sClients.project(iReq.client, this.oid);
   };
 
   Project.prototype.write = { autogen:true, data:true };
@@ -2340,19 +2326,15 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
   Project.prototype.readPageRevision = { page:true, revision:true };
   Project.prototype.handle_readPageRevision = function(iReq, iData) {
     var that = this;
-    if (!that.stmt.getPage) {
-      that.db.prepare("SELECT data, layout FROM page WHERE oid = ?", function(prepErr, stmt) {
-        if (prepErr) throw prepErr;
-        that.stmt.getPage = stmt;
-        that.db.prepare("SELECT oid, map FROM revision WHERE oid != ' ' ORDER BY ROWID DESC", function(prepErr, stmt) {
-          if (prepErr) throw prepErr;
-          that.stmt.pageRevision = stmt;
-          that.db.prepare("SELECT data FROM diff WHERE revision = ? AND object = ?", function(prepErr, stmt) {
-            if (prepErr) throw prepErr;
-            that.stmt.getDiff = stmt;
-            that.handle_readPageRevision(iReq);
-          });
-        });
+    if (!that.stmt.readPageRevision) {
+      that.stmt.readPageRevision = {
+        getPage: "SELECT data, layout FROM page WHERE oid = ?",
+        pageRevision: "SELECT oid, map FROM revision WHERE oid != ' ' ORDER BY ROWID DESC",
+        getDiff: "SELECT data FROM diff WHERE revision = ? AND object = ?"
+      };
+      dbPrepare(that.db, that.stmt.readPageRevision, function(err) {
+        if (err) throw err;
+        that.handle_readPageRevision(iReq);
       });
       return;
     }
@@ -2369,19 +2351,19 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
           });
           return;
         }
-        that.stmt.getPage.bind(1, iReq.page);
-        that.stmt.getPage.step(function(err, row) {
+        that.stmt.readPageRevision.getPage.bind(1, iReq.page);
+        that.stmt.readPageRevision.getPage.step(function(err, row) {
           if (err) throw err;
-          that.stmt.getPage.reset();
+          that.stmt.readPageRevision.getPage.reset();
           that.handle_readPageRevision(iReq, { data:JSON.parse(row.data), layout:JSON.parse(row.layout), revparts:{} });
         });
       });
       return;
     }
-    that.stmt.pageRevision.step(function(err, row) {
+    that.stmt.readPageRevision.pageRevision.step(function(err, row) {
       if (err) throw err;
       if (row.oid === iReq.revision) {
-        that.stmt.pageRevision.reset();
+        that.stmt.readPageRevision.pageRevision.reset();
         aCompleteCache(0);
         function aCompleteCache(idx) {
           for (; idx < iData.layout.length && (!iData.layout[idx].oid || iData.revparts[iData.layout[idx].oid]); ++idx)
@@ -2415,12 +2397,12 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
         that.handle_readPageRevision(iReq, iData);
         return;
       }
-      that.stmt.getDiff.bind(1, row.oid);
+      that.stmt.readPageRevision.getDiff.bind(1, row.oid);
       if (aMap.page[iReq.page].op !== '.') {
-        that.stmt.getDiff.bind(2, iReq.page);
-        that.stmt.getDiff.step(function(err, row) {
+        that.stmt.readPageRevision.getDiff.bind(2, iReq.page);
+        that.stmt.readPageRevision.getDiff.step(function(err, row) {
           if (err) throw err;
-          that.stmt.getDiff.reset();
+          that.stmt.readPageRevision.getDiff.reset();
           that.unpatch(iData, JSON.parse(row.data));
           aPtFn();
         });
@@ -2431,10 +2413,10 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
         for (var aPt in aMap.page[iReq.page].part) {
           iData.revparts[aPt] = true;
           delete aMap.page[iReq.page].part[aPt];
-          that.stmt.getDiff.bind(2, aPt);
-          that.stmt.getDiff.step(function(err, row) {
+          that.stmt.readPageRevision.getDiff.bind(2, aPt);
+          that.stmt.readPageRevision.getDiff.step(function(err, row) {
             if (err) throw err;
-            that.stmt.getDiff.reset();
+            that.stmt.readPageRevision.getDiff.reset();
             var aRevCopy = sRevisionCache+iReq.revision+'_'+aPt;
             if (!row.data) {
               fs.unlink(aRevCopy, function(err) {
@@ -2554,22 +2536,18 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
 
   Project.prototype._makeDiffs = function(iRev, iBufList, iDiffList, iCallback) {
     var that = this;
-    if (!that.stmt.insertDiff) {
-      that.db.prepare("INSERT INTO diff VALUES ( ?, ?, ? )", function(err, stmt) {
+    if (!that.stmt.makeDiffs) {
+      that.stmt.makeDiffs = {
+        insertDiff: "INSERT INTO diff VALUES ( ?, ?, ? )",
+        getPageData: "SELECT data, dataw, layout, layoutw FROM page WHERE oid = ?",
+        resetPageData: "UPDATE page SET\
+                        data   = CASE WHEN dataw   IS NULL THEN data   ELSE dataw   END, dataw   = NULL,\
+                        layout = CASE WHEN layoutw IS NULL THEN layout ELSE layoutw END, layoutw = NULL\
+                        WHERE oid = ?"
+      };
+      dbPrepare(that.db, that.stmt.makeDiffs, function(err) {
         if (err) throw err;
-        that.stmt.insertDiff = stmt;
-        that.db.prepare("SELECT data, dataw, layout, layoutw FROM page WHERE oid = ?", function(err, stmt) {
-          if (err) throw err;
-          that.stmt.getPageData = stmt;
-          that.db.prepare("UPDATE page SET\
-                           data   = CASE WHEN dataw   IS NULL THEN data   ELSE dataw   END, dataw   = NULL,\
-                           layout = CASE WHEN layoutw IS NULL THEN layout ELSE layoutw END, layoutw = NULL\
-                           WHERE oid = ?", function(err, stmt) {
-            if (err) throw err;
-            that.stmt.resetPageData = stmt;
-            that._makeDiffs(iRev, iBufList, iDiffList, iCallback);
-          });
-        });
+        that._makeDiffs(iRev, iBufList, iDiffList, iCallback);
       });
       return;
     }
@@ -2602,12 +2580,12 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
             aInsert(diff);
           });
           function aInsert(diff) {
-            that.stmt.insertDiff.bind(1, aPt);
-            that.stmt.insertDiff.bind(2, iRev);
-            that.stmt.insertDiff.bind(3, diff);
-            that.stmt.insertDiff.step(function(err, row) {
+            that.stmt.makeDiffs.insertDiff.bind(1, aPt);
+            that.stmt.makeDiffs.insertDiff.bind(2, iRev);
+            that.stmt.makeDiffs.insertDiff.bind(3, diff);
+            that.stmt.makeDiffs.insertDiff.step(function(err, row) {
               if (err) throw err;
-              that.stmt.insertDiff.reset();
+              that.stmt.makeDiffs.insertDiff.reset();
               that._makeDiffs(iRev, iBufList, iDiffList, iCallback);
             });
           }
@@ -2617,10 +2595,10 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
       }
       that.revisionMap.page[aPg].done = true;
       if (that.revisionMap.page[aPg].op !== '.') {
-        that.stmt.getPageData.bind(1, aPg);
-        that.stmt.getPageData.step(function(err, row) {
+        that.stmt.makeDiffs.getPageData.bind(1, aPg);
+        that.stmt.makeDiffs.getPageData.step(function(err, row) {
           if (err) throw err;
-          that.stmt.getPageData.reset();
+          that.stmt.makeDiffs.getPageData.reset();
           var aOrig = { data:JSON.parse(row.data ||'{}'), layout:JSON.parse(row.layout ||'[]') };
           var aWork = { data:JSON.parse(row.dataw||'{}'), layout:JSON.parse(row.layoutw||'[]') };
           if (areEqual(aOrig.data, aWork.data)) {
@@ -2639,16 +2617,16 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
             iBufList.push(aDiff);
             iDiffList.push({oid:aPg, size:aDiff.length, type:'page'});
           }
-          that.stmt.insertDiff.bind(1, aPg);
-          that.stmt.insertDiff.bind(2, iRev);
-          that.stmt.insertDiff.bind(3, aDiff);
-          that.stmt.insertDiff.step(function(err, row) {
+          that.stmt.makeDiffs.insertDiff.bind(1, aPg);
+          that.stmt.makeDiffs.insertDiff.bind(2, iRev);
+          that.stmt.makeDiffs.insertDiff.bind(3, aDiff);
+          that.stmt.makeDiffs.insertDiff.step(function(err, row) {
             if (err) throw err;
-            that.stmt.insertDiff.reset();
-            that.stmt.resetPageData.bind(1, aPg);
-            that.stmt.resetPageData.step(function(err, row) {
+            that.stmt.makeDiffs.insertDiff.reset();
+            that.stmt.makeDiffs.resetPageData.bind(1, aPg);
+            that.stmt.makeDiffs.resetPageData.step(function(err, row) {
               if (err) throw err;
-              that.stmt.resetPageData.reset();
+              that.stmt.makeDiffs.resetPageData.reset();
               that._makeDiffs(iRev, iBufList, iDiffList, iCallback);
             });
           });
@@ -2666,12 +2644,12 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
           iBufList.push(aDiff);
           iDiffList.push({oid:that.oid, size:aDiff.length, type:'proj'});
         }
-        that.stmt.insertDiff.bind(1, that.oid);
-        that.stmt.insertDiff.bind(2, iRev);
-        that.stmt.insertDiff.bind(3, aDiff);
-        that.stmt.insertDiff.step(function(err, row) {
+        that.stmt.makeDiffs.insertDiff.bind(1, that.oid);
+        that.stmt.makeDiffs.insertDiff.bind(2, iRev);
+        that.stmt.makeDiffs.insertDiff.bind(3, aDiff);
+        that.stmt.makeDiffs.insertDiff.step(function(err, row) {
           if (err) throw err;
-          that.stmt.insertDiff.reset();
+          that.stmt.makeDiffs.insertDiff.reset();
           dbExec(that.db, "UPDATE projects.project SET data = dataw, dataw = NULL WHERE oid = '"+that.oid+"'", noOpCallback, iCallback);
         });
       });
