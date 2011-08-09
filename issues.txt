@@ -3,6 +3,7 @@ Elembe Issues
 code cleanup
   Use prepared stmts when including parameters from relay messages
   replace literals with constants
+  named local functions start with 'f'
 
 verify request parameter types
 verify client message parameters
@@ -24,8 +25,21 @@ create thorough test sequence
 
 event & error logging; log rotation
 
+project aes key
+  en/decrypt messages on queuing
+
+etc contents to msg body
+  header type field (json, json-mixed, binary...)
+  header length field for json-mixed
+
+profiles
+  table with uuid, data (json), aes key
+  my-profiles project
+    editor app
+
 client
   prevent add member when no revision filed
+  alternate page editors; pgedit code to module
 
 sync all written files prior to commit
 
@@ -38,7 +52,55 @@ peer-to-peer mirror new user node
 
 websocket.MQ
   multiple nodes per user
+    store user nodelist
+    register with uid, new-nodeid, prev-nodeid (for 2nd+ node); check new/valid uid
+    login with uid & nodeid, no pass
+    on msg lookup nodelist for uid, queue msg for each node
+  multiple apps/ports per node
   prompt user to restart or deactivate unused nodes
   suspend inactive users, purge updates & notify projects; returning user issues rejoin request
 
+
+
+sidelining scratch space
+
+rev a1  prev _   map aa-af
+rev a2  prev a1  map aa
+rev b1  prev a2  map ac ae
+--
+rev a3  prev b1  map aa ab
+rev a4  prev a3  map ac ad     direct conflict
+cur a            map ad af     indirect conflict
+--
+rev b2  prev b1  map aa ae     direct conflict
+rev b3  prev b2  map ac
+
+choose winner
+  step thru revs until row.oid == new.prev, log conflicting revs
+    no conflicts, done
+  find most-senior author
+    if new author most-senior
+      undo, forwardize, sideline conflicting revs and any revs descended from THEM
+      if curr conflicts commit to sideline
+      reset clientstate in affected pages
+    else
+      sideline new rev
+  update client
+    remove sidelined pages; set rev mode if current page removed
+    notify sidelining of current edits
+  readRev does rewind-then-foward for a sidelined rev; skip sidelined on back phase
+  parts of sidelined rev can be pushed into current
+  force save of client data before applying rev?
+
+branching
+  step thru revs to prev, log revs with conflicts between maps
+    no conflicts, done
+    prev in branch, include in branch
+    conflicts in branched revs, set branch for incoming
+    conflicts in branched revs and non-branched, ???
+  log revs descended from conflicted revs
+  set branch and forwardize logged revs
+  commit current in branch if conflicted
+  set branch for incoming rev
+  goBranch applies revs in revisioncache
 
