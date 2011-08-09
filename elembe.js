@@ -24,7 +24,7 @@ var schema = {
   services: {
     service: {
       host: 'text unique', // domain name
-      password: 'text',
+      nodeid: 'text',
       joined: 'text',
       aliases: 'text', // json [ string, ... ]
       comment: 'text',
@@ -701,7 +701,7 @@ var sServices = {
       if (iRow.joined === 'no') {
         iRow.joined = (new Date).toISOString();
         aJoined = ",joined='"+iRow.joined+"'";
-        iRow.conn.login(sUUId, iRow.password);
+        iRow.conn.login(sUUId, iRow.nodeid);
       }
       iRow.newreg = 0;
       dbExec(sServices.db, "UPDATE service SET newreg=0, aliases='"+iRow.aliases+"'"+aJoined+" WHERE host='"+iRow.host+"'", noOpCallback, function() {
@@ -713,10 +713,10 @@ var sServices = {
         iRow.status = 'online';
         sClients.notify(null, {type:'services', list:sServices.list(iRow.host)});
         if (iRow.newreg)
-          iRow.conn.register(sUUId, '', iRow.aliases);
+          iRow.conn.register(sUUId, '', '', iRow.aliases);
         sServices._sendNext(iRow.host);
       } else if (/^reg fail/.test(msg)) {
-        iRow.conn.login(sUUId, iRow.password);
+        iRow.conn.login(sUUId, iRow.nodeid);
       }
     });
     iRow.conn.on('quit', function(msg) {
@@ -775,9 +775,9 @@ var sServices = {
     var aAddr = iHost.split(':');
     aS.conn.connect(aAddr[0], +aAddr[1] || 80, function() {
       if (aS.joined === 'no')
-        aS.conn.register(sUUId, aS.password, aS.aliases);
+        aS.conn.register(sUUId, aS.nodeid, '', aS.aliases);
       else
-        aS.conn.login(sUUId, aS.password);
+        aS.conn.login(sUUId, aS.nodeid);
     });
   };
 
@@ -807,9 +807,9 @@ var sServices = {
   sServices.touch = function(iHost, iAliases, iComment, iReq) {
     var that = this;
     if (!(iHost in this.s)) {
-      var aPass = uuid.generate();
-      dbExec(that.db, "INSERT INTO service VALUES ('"+iHost+"', '"+aPass+"', 'no', NULL, NULL, 2)", noOpCallback, function() {
-        that._create({ host:iHost, password:aPass, joined:'no', aliases:null, comment:null, newreg:2 }, function(svc) {
+      var aNodeId = uuid.generate();
+      dbExec(that.db, "INSERT INTO service VALUES ('"+iHost+"', '"+aNodeId+"', 'no', NULL, NULL, 2)", noOpCallback, function() {
+        that._create({ host:iHost, nodeid:aNodeId, joined:'no', aliases:null, comment:null, newreg:2 }, function(svc) {
           that.touch(iHost, iAliases, iComment, iReq);
         });
       });
@@ -833,7 +833,7 @@ var sServices = {
       if (that.s[iHost].status === 'offline')
         that._connect(iHost);
       else if (that.s[iHost].status === 'online')
-        that.s[iHost].conn.register(sUUId, '', that.s[iHost].aliases);
+        that.s[iHost].conn.register(sUUId, '', '', that.s[iHost].aliases);
       sClients.notify(iReq, {type:'services', list:that.list(iHost)});
     });
   };

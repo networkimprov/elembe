@@ -48,14 +48,12 @@ switch to sqlite3 module
 fs.utimes in dupFile
 
 activate new node for user
-peer-to-peer mirror new user node
+  primary contact secondary, provide uid, nodeid, service list
+  secondary register with services, hold any new msgs til project arrives
+  primary send projects
+  primary display progress bar
 
 websocket.MQ
-  multiple nodes per user
-    store user nodelist
-    register with uid, new-nodeid, prev-nodeid (for 2nd+ node); check new/valid uid
-    login with uid & nodeid, no pass
-    on msg lookup nodelist for uid, queue msg for each node
   multiple apps/ports per node
   prompt user to restart or deactivate unused nodes
   suspend inactive users, purge updates & notify projects; returning user issues rejoin request
