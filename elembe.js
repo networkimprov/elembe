@@ -1418,7 +1418,7 @@ function Project(iRecord, iCallback) {
           dbExec(that.db, "SELECT map, parents FROM revision WHERE oid = ' '", function(err, row) {
             if (err) throw err;
             if (row) {
-              that.revisionMap = row.map ? JSON.parse(row.map) : that.revisionMapInit;
+              that.revisionMap = row.map ? JSON.parse(row.map) : that.revisionMapInit();
               that.parentMap = JSON.parse(row.parents);
             }
           }, function() {
@@ -2658,7 +2658,9 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
     }
   };
 
-  Project.prototype.revisionMapInit = {touch:null, page:{}};
+  Project.prototype.revisionMapInit = function() {
+    return {touch:null, page:{}};
+  };
   Project.prototype.revisionMapJson = function() {
     return JSON.stringify({touch:(new Date).toISOString(), page:{}});
   };
@@ -2724,7 +2726,7 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
             if (iNoSendCallback)
               return iNoSendCallback(aRev);
             that._finishRevision(that.db, that.revisionMap, rev, revdata, function() {
-              that.revisionMap = that.revisionMapInit;
+              that.revisionMap = that.revisionMapInit();
               delete aRev.list;
               sClients.notify(iReq, aRev, that.oid);
             });
