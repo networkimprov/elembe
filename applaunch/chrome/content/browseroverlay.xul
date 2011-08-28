@@ -1,0 +1,22 @@
+<overlay id="networkimprov-applaunch-browser" xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul">
+  <script type="application/x-javascript">
+    document.addEventListener('networkimprov-applaunch-open', function(iEvt) {
+      var aHost = iEvt.target.ownerDocument.location.hostname;
+      if (aHost.indexOf('.') >= 0)
+        throw 'networkimprov-applaunch-open event: host must be on the LAN';
+      var aF = Components.classes["@mozilla.org/file/local;1"].getService(Components.interfaces.nsILocalFile);
+      try {
+      aF.initWithPath('\\\\'+aHost+'\\'+iEvt.target.getAttribute('file'));
+      } catch (err) {
+        aF.initWithPath('//'+aHost+'/'+iEvt.target.getAttribute('file'));
+      }
+      try {
+      aF.launch();
+      } catch (err) {
+        Components.classes["@mozilla.org/uriloader/external-protocol-service;1"].getService(Components.interfaces.nsIExternalProtocolService)
+          .loadUrl(Components.classes["@mozilla.org/network/io-service;1"].getService(Components.interfaces.nsIIOService).newFileURI(aF));
+      }
+    }, false, true);
+  </script>
+</overlay>
+

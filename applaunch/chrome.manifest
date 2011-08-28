@@ -1,0 +1,3 @@
+content networkimprov-applaunch chrome/content/
+overlay chrome://browser/content/browser.xul chrome://networkimprov-applaunch/content/browseroverlay.xul
+
