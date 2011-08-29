@@ -4,6 +4,8 @@ code cleanup
   Use prepared stmts when including parameters from relay messages
   replace literals with constants
   named local functions start with 'f'
+  argument names used internally start with '_'
+  turn into classes with methods: revisionMap
 
 verify request parameter types
 verify client message parameters
@@ -16,6 +18,11 @@ Sidelining
     flag when uncommitted revision sidelined
   force save of client data before applying incoming rev?
   parts of sidelined rev can be pushed into current revision
+
+desktop app support
+  on foreign rev and file open, set .w file read-only and mv to revcache
+
+purge algorithms for RevisionCache & EditCache
 
 comments
   protection against inconsistency when saving data and submitting relay msg

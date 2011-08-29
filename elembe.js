@@ -564,7 +564,6 @@ function main() {
           });
           conn.on('disconnect', function() {
             aOn = false;
-            sAttachments.close(aClientId);
             sClients.client(aClientId, null);
           });
         });
@@ -576,10 +575,11 @@ function main() {
 var sFileMap = {
   '/':'client/_suae_.html',
   '/socket-io.js':'socket.io/socket.io.js',
+  '/applaunch':'client/applaunch.xpi',
   '/test':'dbtest.html',
   '/part':''
 };
-var sTypeMap = { js:'text/javascript', css:'text/css', html:'text/html' };
+var sTypeMap = { js:'text/javascript', css:'text/css', html:'text/html', xpi:'application/x-xpinstall' };
 
 function httpRequest(req, res) {
   var aUrl = url.parse(req.url, true), aFile = sFileMap[aUrl.pathname];
@@ -627,7 +627,7 @@ function httpRequest(req, res) {
   } else {
     if (!aFile)
       aFile = 'client'+aUrl.pathname;
-    fs.readFile(aFile, 'utf8', function(err, data) {
+    fs.readFile(aFile, function(err, data) {
       if (err) {
         if (err.errno !== process.ENOENT) throw err;
         res.writeHead(404, {'Content-Type':'text/plain'});
@@ -638,7 +638,7 @@ function httpRequest(req, res) {
       if (!req.headers.cookie || req.headers.cookie.indexOf('anvlclient=') < 0)
         aHeaders['Set-Cookie'] = 'anvlclient='+uuid.generate()+'; expires=31-Oct-3333 01:01:01 GMT; path=/';
       res.writeHead(200, aHeaders);
-      res.end(data, 'utf8');
+      res.end(data);
     });
   }
 }
@@ -907,9 +907,20 @@ var sServices = {
 
 
 var sAttachments = {
-  open: {},
+  file: {},
   notify: null
 };
+
+  sAttachments._addFile = function(iProject, iPage, iOid) {
+    if (!this.file[iOid]) {
+      this.file[iOid] = { readOnly:true, n:-1, id:null, onWrite: function(event) {
+        if (event.mask & Inotify.IN_IGNORED)
+          return;
+        queueRequest({type:'writePart', client:null, project:iProject, page:iPage, part:iOid, data:null});
+      }};
+    }
+    return this.file[iOid];
+  };
 
   sAttachments.init = function() {
     var that = this;
@@ -917,12 +928,13 @@ var sAttachments = {
     that.notify.addWatch({path:sEditCache, watch_for:Inotify.IN_CREATE|Inotify.IN_MOVED_TO, callback: function(event) {
       if (event.mask & Inotify.IN_IGNORED)
         return;
-      var aDot = event.name.lastIndexOf('.');
-      var aOid = aDot >= 0 ? event.name.slice(0, aDot) : event.name;
-      if (!aOid || !that.open[aOid])
+      var aOid, aSeg = event.name.split('_');
+      if (aSeg.length !== 5 || !that.file[aOid=aSeg[2]])
         return;
-      var aId = that.open[aOid].id;
-      that.open[aOid].id = that.notify.addWatch({path:sEditCache+event.name, watch_for:Inotify.IN_MODIFY, callback:that.open[aOid].onWrite});
+      var aId = that.file[aOid].id;
+      that.file[aOid].id = that.notify.addWatch({path:sEditCache+event.name, watch_for:Inotify.IN_MODIFY, callback:that.file[aOid].onWrite});
+      if (that.file[aOid].id === -1)
+        throw new Error('addwatch for new file failed');
       if (aId !== null) {
         that.notify.removeWatch(aId);
         var aPath = getPath(aOid);
@@ -930,39 +942,36 @@ var sAttachments = {
           if (err) throw err;
           fs.link(sEditCache+event.name, aPath+'.w', noOpCallback);
         });
-        that.open[aOid].onWrite({mask:Inotify.IN_MODIFY});
+        that.file[aOid].onWrite({mask:Inotify.IN_MODIFY});
       }
     }});
     fs.readdir(sEditCache, function(err, dir) {
       if (err) throw err;
-      var aCheck = function(a) {
-        for (var aSeg; a < dir.length && (aSeg = dir[a].split('.')).length !== 3; ++a) {}
-        if (a >= dir.length)
+      fCheck(0);
+      function fCheck(fileN) {
+        for (var aSeg; fileN < dir.length && (aSeg = dir[fileN].split('_')).length !== 5; ++fileN) {}
+        if (fileN >= dir.length)
           return;
-        fs.unlink(sEditCache+dir[a], function(err) {
+        var aFile = that._addFile(aSeg[0], aSeg[1], aSeg[2]);
+        if (+aSeg[3] > aFile.n)
+          aFile.n = +aSeg[3];
+        fs.stat(sEditCache+dir[fileN], function(err, stats) {
           if (err) throw err;
-          var aPath = getPath(aSeg[0]+'.'+aSeg[1]);
-          fs.stat(aPath+'.w', function(err, work) {
-            if (err)
-              return aCheck(++a);
-            fs.stat(aPath, function(err, main) {
-              if (err || work.mtime.valueOf() !== main.mtime.valueOf())
-                return aCheck(++a);
-              fs.unlink(aPath+'.w', function(err) {
-                if (err) throw err;
-                aCheck(++a);
-              });
-            });
-          });
+          if (stats.mode % 01000 !== 0444) {
+            aFile.readOnly = false;
+            aFile.id = that.notify.addWatch({path:sEditCache+dir[fileN], watch_for:Inotify.IN_MODIFY, callback:aFile.onWrite});
+            if (aFile.id === -1)
+              throw new Error('addwatch for existing file failed');
+          }
+          fCheck(++fileN);
         });
-      };
-      aCheck(0);
+      }
     });
   };
 
-  sAttachments.ready = function(iClient, iProject, iPage, iOid, iDocType, iCallback) {
+  sAttachments.ready = function(iProject, iPage, iOid, iDocType, iCallback) {
     if (iOid.indexOf('_') >= 0) {
-      var aDocPath = sRevisionCache + iOid + iDocType;
+      var aDocPath = sRevisionCache + iOid+'_'+iDocType;
       fs.symlink(iOid, aDocPath, function(err) { //. use .link()
         if (err && err.errno !== process.EEXIST) throw err;
         fs.chmod(sRevisionCache + iOid, 0444, function(err) {
@@ -974,56 +983,46 @@ var sAttachments = {
     }
     var that = this;
     var aPath = getPath(iOid);
-    var aLink = function() {
-      var aDocPath = sEditCache + iOid + iDocType;
-      if (!that.open[iOid])
-        that.open[iOid] = { docpath:{}, client:{}, id:null, onWrite: function(event) {
-          if (event.mask & Inotify.IN_IGNORED)
-            return;
-          queueRequest({type:'writePart', client:null, project:iProject, page:iPage, part:iOid, data:null});
-        }};
-      that.open[iOid].docpath[aDocPath] = true;
-      that.open[iOid].client[iClient] = true;
-      fs.link(aPath+'.w', aDocPath, function(err) {
-        if (err && err.errno !== process.EEXIST) throw err;
-        iCallback(aDocPath.replace(/\//g, '\\'));
-      });
-    };
     fs.stat(aPath+'.w', function(err, stats) {
       if (err)
         dupFile(aPath, aPath+'.w', function(err) {
           if (err) throw err;
-          aLink();
+          fLink();
         });
       else
-        aLink();
+        fLink();
+    });
+    function fLink() {
+      var aFile = that._addFile(iProject, iPage, iOid);
+      if (aFile.readOnly) {
+        aFile.readOnly = false;
+        ++aFile.n;
+      }
+      var aDocPath = sEditCache + iProject+'_'+iPage+'_'+iOid+'_'+aFile.n+'_'+iDocType;
+      fs.link(aPath+'.w', aDocPath, function(err) {
+        if (err && err.errno !== process.EEXIST) throw err;
+        iCallback(aDocPath.replace(/\//g, '\\'));
+      });
+    }
+  };
+
+  sAttachments.invalidate = function(iOid, iCallback) {
+    var that = this;
+    var aPath = getPath(iOid)+'.w';
+    fs.chmod(aPath, 0444, function(err) {
+      if (err) throw err;
+      that.file[iOid].readOnly = true;
+      that.notify.removeWatch(that.file[iOid].id);
+      that.file[iOid].id = null;
+      syncFile(aPath, function(err) {
+        if (err) throw err;
+        iCallback();
+      });
     });
   };
 
-  sAttachments.close = function(iClient) {
-    for (var aOid in this.open) {
-      if (!this.open[aOid].client[iClient])
-        continue;
-      delete this.open[aOid].client[iClient];
-      var aActive = false;
-      for (aActive in this.open[aOid].client) break;
-      if (!aActive) {
-        this.notify.removeWatch(this.open[aOid].id);
-        for (var aL in this.open[aOid].docpath)
-          fs.unlink(aL, noOpCallback);
-        (function() {
-          var aPath = getPath(aOid);
-          fs.stat(aPath+'.w', function(err, work) {
-            if (err) return;
-            fs.stat(aPath, function(err, main) {
-              if (err || work.mtime.valueOf() !== main.mtime.valueOf()) return;
-              fs.unlink(aPath+'.w', noOpCallback);
-            });
-          });
-        })();
-        delete this.open[aOid];
-      }
-    }
+  sAttachments.isOpen = function(iOid) {
+    return this.file[iOid] ? !this.file[iOid].readOnly : false;
   };
 
 
@@ -1323,7 +1322,7 @@ var sProjects = {
   sProjects.readyAttachment = { uri:true, doctype:true };
   sProjects.handle_readyAttachment = function(iReq) {
     var aUri = url.parse(iReq.uri, true);
-    sAttachments.ready(iReq.client, aUri.query.project, aUri.query.page, aUri.query.oid, iReq.doctype, function(path) {
+    sAttachments.ready(aUri.query.project, aUri.query.page, aUri.query.oid, iReq.doctype, function(path) {
       sClients.respond(iReq, { path:path });
     });
   };
@@ -2736,34 +2735,44 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
     });
   };
 
-  Project.prototype._finishRevision = function (iDb, iMap, iRev, iRevData, iCallback) {
+  Project.prototype._finishRevision = function (iDb, iMap, iRev, iRevData, iCallback, _setMap) {
     var that = this;
-    if (iMap.page.sideline) {
-      var aSide = iMap.page.sideline
-      delete iMap.page.sideline;
-      var aSetMap = ", map = '"+JSON.stringify(iMap)+"'";
-      iMap.page.sideline = aSide;
+    if (!_setMap) {
+      _setMap = ' ';
+      if (iMap.page.sideline) {
+        var aSide = iMap.page.sideline
+        delete iMap.page.sideline;
+        _setMap = ", map = '"+JSON.stringify(iMap)+"'";
+        iMap.page.sideline = aSide;
+      }
     }
-    var aExt = iMap.page.sideline ? '.new' : '.w';
     for (var aPg in iMap.page) {
       for (var aPt in iMap.page[aPg].part) {
         var aPath = getPath(aPt);
-        if (sAttachments.open[aPt]) {
-          dupFile(aPath+aExt, aPath, function(err) {
+        if (sAttachments.isOpen(aPt)) {
+          if (_setMap !== ' ') {
+            sAttachments.invalidate(aPt, function() {
+              that._finishRevision(iDb, iMap, iRev, iRevData, iCallback, _setMap);
+            });
+            return;
+          }
+          dupFile(aPath+'.w', aPath, function(err) {
             if (err) throw err;
-            that._finishRevision(iDb, iMap, iRev, iRevData, iCallback);
+            that._finishRevision(iDb, iMap, iRev, iRevData, iCallback, _setMap);
           });
         } else {
-          var aCbCount = aPg === 'sideline' ? 2 : 1;
-          if (aPg === 'sideline')
-            fs.unlink(aPath+'.w', aCallback);
-          fs.rename(aPath+aExt, aPath, aCallback);
-          function aCallback(err) {
+          var aCbCount = 1;
+          if (_setMap !== ' ') {
+            fs.unlink(aPath+'.w', fCallback);
+            ++aCbCount;
+          }
+          fs.rename(aPath+(_setMap !== ' ' ? '.new' : '.w'), aPath, fCallback);
+          function fCallback(err) {
             if (err && err.errno !== process.ENOENT) throw err;
             if (--aCbCount === 0)
               syncFile(getParent(aPath), function(err) {
                 if (err) throw err;
-                that._finishRevision(iDb, iMap, iRev, iRevData, iCallback);
+                that._finishRevision(iDb, iMap, iRev, iRevData, iCallback, _setMap);
               });
           }
         }
@@ -2780,7 +2789,7 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
     else
       aUpdate();
     function aUpdate() {
-      dbExec(iDb, "UPDATE revision SET oid = substr(oid, 2)"+(aSetMap||'')+" WHERE oid LIKE '!%'", noOpCallback, iCallback);
+      dbExec(iDb, "UPDATE revision SET oid = substr(oid, 2)"+_setMap+" WHERE oid LIKE '!%'", noOpCallback, iCallback);
     }
   };
 
