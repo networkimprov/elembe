@@ -477,11 +477,12 @@ function Queue() {
     }
   }
 
-var sMainDir = 'sqltest/';
-var sRevisionCache = sMainDir+'#revisioncache/';
-var sEditCache = sMainDir+'#editcache/';
-var sSendDir = sMainDir+'#outbound/';
-var sInbound = sMainDir+'#inbound/';
+var sMainDir = 'data/';
+var sRevisionCache = '#revisioncache/';
+var sEditCache = '#editcache/';
+var sSendDir = '#outbound/';
+var sInbound = '#inbound/';
+var sHttpPort = 8000;
 var sUUId;
 var sRecord = null;
 var sPlayback = null;
@@ -490,11 +491,26 @@ var Inotify = inotify.Inotify;
 
 function main() {
   var aAutogen;
-  switch (process.argv[2]) {
-  case 'autogen':  aAutogen  = true;            break;
-  case 'record':   sRecord   = process.argv[3]; break;
-  case 'playback': sPlayback = process.argv[3]; break;
+  function fExcluded() { return aAutogen || sRecord || sPlayback ? true : false }
+  for (var a=2; a < process.argv.length; ++a) {
+    switch (process.argv[a]) {
+    case 'autogen':       if (!fExcluded()) aAutogen  = true;            break;
+    case 'record':   ++a; if (!fExcluded()) sRecord   = process.argv[a]; break;
+    case 'playback': ++a; if (!fExcluded()) sPlayback = process.argv[a]; break;
+    case 'alt':
+      sMainDir = 'data-'+process.argv[++a]+'/';
+      sHttpPort = +process.argv[++a];
+      break;
+    default:
+      console.log('unknown command option '+process.argv[a]);
+      return;
+    }
   }
+
+  sRevisionCache = sMainDir+sRevisionCache;
+  sEditCache     = sMainDir+sEditCache;
+  sSendDir       = sMainDir+sSendDir;
+  sInbound       = sMainDir+sInbound;
 
   if (aAutogen) {
     var aMask = process.umask(0000);
@@ -525,7 +541,7 @@ function main() {
     }, function() {
       aDb.close();
       if (sRecord || sPlayback) {
-        var aRp = new RecordPlayback(process.argv[2], sRecord || sPlayback);
+        var aRp = new RecordPlayback(sRecord ? 'record' : 'playback', sRecord || sPlayback);
         if (aRp.error) {
           console.log(aRp.error);
           return;
@@ -547,7 +563,7 @@ function main() {
           return;
         }
         aServer = http.createServer(httpRequest);
-        aServer.listen(8000);
+        aServer.listen(sHttpPort);
         var aSocket = io.listen(aServer);
         aSocket.on('connection', function(conn) {
           var aClientId = conn.request.headers.cookie.slice(conn.request.headers.cookie.indexOf('=')+1);
