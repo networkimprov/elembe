@@ -2751,61 +2751,63 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
     });
   };
 
-  Project.prototype._finishRevision = function (iDb, iMap, iRev, iRevData, iCallback, _setMap) {
+  Project.prototype._finishRevision = function (iDb, iMap, iRev, iRevData, iCallback, _done) {
     var that = this;
-    if (!_setMap) {
-      _setMap = ' ';
-      if (iMap.page.sideline) {
-        var aSide = iMap.page.sideline
-        delete iMap.page.sideline;
-        _setMap = ", map = '"+JSON.stringify(iMap)+"'";
-        iMap.page.sideline = aSide;
-      }
-    }
+    if (!_done)
+      _done = { pg:{}, pt:{} };
     for (var aPg in iMap.page) {
+      if (_done.pg[aPg])
+        continue;
       for (var aPt in iMap.page[aPg].part) {
+        if (_done.pt[aPt])
+          continue;
         var aPath = getPath(aPt);
         if (sAttachments.isOpen(aPt)) {
-          if (_setMap !== ' ') {
+          if (iMap.page.sideline) {
             sAttachments.invalidate(aPt, function() {
-              that._finishRevision(iDb, iMap, iRev, iRevData, iCallback, _setMap);
+              that._finishRevision(iDb, iMap, iRev, iRevData, iCallback, _done);
             });
             return;
           }
           dupFile(aPath+'.w', aPath, function(err) {
             if (err) throw err;
-            that._finishRevision(iDb, iMap, iRev, iRevData, iCallback, _setMap);
+            that._finishRevision(iDb, iMap, iRev, iRevData, iCallback, _done);
           });
         } else {
           var aCbCount = 1;
-          if (_setMap !== ' ') {
+          if (iMap.page.sideline) {
             fs.unlink(aPath+'.w', fCallback);
             ++aCbCount;
           }
-          fs.rename(aPath+(_setMap !== ' ' ? '.new' : '.w'), aPath, fCallback);
+          fs.rename(aPath+(iMap.page.sideline ? '.new' : '.w'), aPath, fCallback);
           function fCallback(err) {
             if (err && err.errno !== process.ENOENT) throw err;
             if (--aCbCount === 0)
               syncFile(getParent(aPath), function(err) {
                 if (err) throw err;
-                that._finishRevision(iDb, iMap, iRev, iRevData, iCallback, _setMap);
+                that._finishRevision(iDb, iMap, iRev, iRevData, iCallback, _done);
               });
           }
         }
-        delete iMap.page[aPg].part[aPt];
+        _done.pt[aPt] = true;
         return;
       }
-      delete iMap.page[aPg];
+      _done.pg[aPg] = true;
+      _done.pt = {};
     }
     if (iRev)
       sServices.listPost(that.service, that.oid, iRev, iRevData, function() {
         fs.unlink(sSendDir+iRev.oid, noOpCallback);
-        aUpdate();
+        fUpdate();
       });
     else
-      aUpdate();
-    function aUpdate() {
-      dbExec(iDb, "UPDATE revision SET oid = substr(oid, 2)"+_setMap+" WHERE oid LIKE '!%'", noOpCallback, iCallback);
+      fUpdate();
+    function fUpdate() {
+      if (iMap.page.sideline) {
+        delete iMap.page.sideline;
+        var aSetMap = ", map = '"+JSON.stringify(iMap)+"'";
+      }
+      dbExec(iDb, "UPDATE revision SET oid = substr(oid, 2)"+(aSetMap||'')+" WHERE oid LIKE '!%'", noOpCallback, iCallback);
     }
   };
 
