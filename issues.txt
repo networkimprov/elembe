@@ -10,11 +10,14 @@ code cleanup
 verify request parameter types
 verify client message parameters
 
+notice to user and set read-only when loaded pages revised/sidelined
+  push loaded page to rev cache on user ack
+
 Sidelining
   Fix readRevision for sidelined revisions
   Update client when cached page sidelined
+    notify for sidelined revs
     Mark sidelined revisions in client list
-    set rev mode if current page sidelined
     flag when uncommitted revision sidelined
   force save of client data before applying incoming rev?
   parts of sidelined rev can be pushed into current revision
@@ -64,6 +67,9 @@ websocket.MQ
   multiple apps/ports per node
   prompt user to restart or deactivate unused nodes
   suspend inactive users, purge updates & notify projects; returning user issues rejoin request
+
+applaunch
+  prevent ipv6 and all-numeric addresses
 
 
 

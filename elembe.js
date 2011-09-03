@@ -2329,7 +2329,7 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
           if (stepErr) throw stepErr;
           that.stmt.setRevisionMap.reset();
           dbExec(that.db, "COMMIT TRANSACTION", noOpCallback, function() {
-            iReq.data.type = 'pagedata';
+            iReq.data.type = 'pagelayout';
             sClients.notify(iReq.client, iReq.data, that.oid, !iReq.data.data && iReq.page);
             sClients.respond(iReq, {status:'ok'});
           });

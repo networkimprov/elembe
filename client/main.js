@@ -476,7 +476,7 @@ suae.pMgr = {
       case 'page':
         this.updatePagePanels(iJso.project, iJso.list[a]);
         break;
-      case 'pagedata':
+      case 'pagelayout':
         if (iJso.list[a].data)
           this.updatePagePanels(iJso.project, iJso.list[a], true);
         if (iJso.list[a].layout) {
@@ -514,7 +514,7 @@ suae.pMgr = {
         break;
       case 'revision'://. need state for rev
         this.addRevision(this.pj[iJso.project], iJso.list[a]);
-        var aRev = false;//.iJso.list[a];
+        var aRevMap = iJso.list[a].map;
         break;
       case 'message':
         var aMsg = '<div class="msgpanelitem">'+ iJso.list[a].html +'<span class="msgpaneldate">@'+ iJso.list[a].date +'</span></div>';
@@ -524,9 +524,9 @@ suae.pMgr = {
         alert('unknown update type: '+iJso.list[a].type);
       }
     }
-    if (aRev) {
-      for (var a=0; a < aRev.page.length; ++a)
-        suae.pMgr.revisePage(aRev.page[a].oid, aRev.page[a].diff);
+    if (aRevMap) {
+      for (var a in aRevMap.page)
+        suae.pMgr.revisePage(this.pj[iJso.project], a);
     }
   } ,
 
@@ -1091,7 +1091,6 @@ suae.pMgr = {
   } ,
 
   revisePage: function(iProj, iOid) {
-    //. should compare layouts and apply changes
     if (!iProj.page[iOid])
       return;
     var aPrev = iProj.page[iOid];
@@ -1102,7 +1101,7 @@ suae.pMgr = {
     }
     if (this.pjCurr.curr === iOid && this.pjCurr.currRev === null)
       this.loadPage(iOid, iProj);
-    this.releasePage(iProj, aPrev);
+    this.releasePage(iProj, aPrev); //. should move this copy to the .rev list
   } ,
 
   releasePage: function(iProj, iPage) {
