@@ -1586,7 +1586,7 @@ function Project(iRecord, iCallback) {
         for (var a in that.parentMap)
           if (!(a in iReq.jso.parents))
             iReq.jso.parents[a] = 0;
-        that.checkConflict(iReq.jso, function(sideline, partlist) {
+        that.checkConflict(iReq.jso, aNotify, function(sideline, partlist) {
 console.log(partlist);
           if (partlist)
             iReq.jso.map.page.sideline = {part:partlist};
@@ -1757,7 +1757,7 @@ console.log(partlist);
     });
   };
 
-  Project.prototype.checkConflict = function(iRevision, iCallback, iConflict, iChain) {
+  Project.prototype.checkConflict = function(iRevision, oNotify, iCallback, iConflict, iChain) {
     var that = this;
     if (!that.stmt.checkConflict) {
       that.stmt.checkConflict = {
@@ -1775,7 +1775,7 @@ console.log(partlist);
       };
       dbPrepare(that.db, that.stmt.checkConflict, function(err) {
         if (err) throw err;
-        that.checkConflict(iRevision, iCallback);
+        that.checkConflict(iRevision, oNotify, iCallback);
       });
       return;
     }
@@ -1806,7 +1806,7 @@ console.log(partlist);
         }
       }
       if (iRevision._parents)
-        return that.checkConflict(iRevision, iCallback, iConflict, iChain);
+        return that.checkConflict(iRevision, oNotify, iCallback, iConflict, iChain);
       function aLogConflict(main, alt, chain) {
         if (chain) {
           for (var a in alt.parents) {
@@ -1878,8 +1878,10 @@ console.log(partlist);
           else
             aSideline();
           function aSideline(newrev) {
-            if (newrev)
+            if (newrev) {
               iConflict[0].oid = newrev.oid;
+              oNotify.push(newrev);
+            }
             var aObject;
 console.log(iConflict[aRevN], iConflict[aRevN].map);
             for (var aPg in iConflict[aRevN].map.page) {
@@ -2732,15 +2734,17 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
           aRev.project = that.oid;
           storeFile(sSendDir+aRev.oid, MqClient.packMsg(aRev, aRevData), function(err) {
             if (err) throw err;
-            aCommit(aRev, aRevData);
+            aCommit(aRevData);
           });
         });
-        function aCommit(rev, revdata) {
+        function aCommit(revdata) {
           dbExec(that.db, "UPDATE revision SET map = NULL, parents = '"+JSON.stringify(that.parentMap)+"' WHERE oid = ' ';\
                            RELEASE commit_revision;", noOpCallback, function () {
-            if (iNoSendCallback)
+            if (iNoSendCallback) {
+              delete aRev.list;
               return iNoSendCallback(aRev);
-            that._finishRevision(that.db, that.revisionMap, rev, revdata, function() {
+            }
+            that._finishRevision(that.db, that.revisionMap, revdata && aRev, revdata, function() {
               that.revisionMap = that.revisionMapInit();
               delete aRev.list;
               sClients.notify(iReq, aRev, that.oid);
