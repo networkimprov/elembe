@@ -12,13 +12,11 @@ verify client message parameters
 
 notice to user and set read-only when loaded pages revised/sidelined
   push loaded page to rev cache on user ack
+  not for revision author
 
 Sidelining
   Fix readRevision for sidelined revisions
-  Update client when cached page sidelined
-    notify for sidelined revs
-    Mark sidelined revisions in client list
-    flag when uncommitted revision sidelined
+  flag when uncommitted revision sidelined
   force save of client data before applying incoming rev?
   parts of sidelined rev can be pushed into current revision
 

@@ -1588,6 +1588,7 @@ function Project(iRecord, iCallback) {
             iReq.jso.parents[a] = 0;
         that.checkConflict(iReq.jso, aNotify, function(sideline, partlist) {
 console.log(partlist);
+          iReq.jso.sideline = sideline;
           if (partlist)
             iReq.jso.map.page.sideline = {part:partlist};
           dbExec(that.db, "INSERT INTO revision VALUES (\
@@ -1983,6 +1984,7 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
             that.stmt.checkConflict.setrev.step(function(err, row) {
               if (err) throw err;
               that.stmt.checkConflict.setrev.reset();
+              oNotify.push({type:'revisionsideline', oid:iConflict[aRevN].oid});
               if (++aRevN < iConflict.length)
                 aSideline();
               else

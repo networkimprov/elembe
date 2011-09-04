@@ -516,6 +516,9 @@ suae.pMgr = {
         this.addRevision(this.pj[iJso.project], iJso.list[a]);
         var aRevMap = iJso.list[a].map;
         break;
+      case 'revisionsideline':
+        this.sidelineRevision(this.pj[iJso.project], iJso.list[a].oid);
+        break;
       case 'message':
         var aMsg = '<div class="msgpanelitem">'+ iJso.list[a].html +'<span class="msgpaneldate">@'+ iJso.list[a].date +'</span></div>';
         this.pj[iJso.project].msgPanel.listSet('msglist', this.pj[iJso.project].msgPanelNext++, aMsg);
@@ -617,12 +620,16 @@ suae.pMgr = {
       iDiv.parentNode.style.padding = '1px';
     }
     this.pjCurr.revLink = iDiv;
-  },
+  } ,
+
+  sidelineRevision: function(iProj, iRevId) {
+    var aEl = iProj.revPanel.listGet('revlist', iRevId);
+    if (aEl)
+      aEl.setAttribute('tag', 'sideline');
+  } ,
 
   addRevision: function(iProj, iRev) {
-    if (!iProj.revPanel)
-      return;
-    var aHtml = '<div class="revpanelrev">'+ iRev.date;
+    var aHtml = '<div class="revpanelrev"'+ (iRev.sideline ? ' tag="sideline"' : '') +'>'+ iRev.date;
 
     for (var aPg in iRev.map.page) {
       var aClik = "suae.pMgr.markRevision(this.parentNode); suae.pMgr.goRev('"+ aPg +"','"+ iRev.oid +"'); return false;";

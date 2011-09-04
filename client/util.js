@@ -302,65 +302,56 @@ suae.paletteMgr = {
       }
     } ,
 
+    listSet:    function(iName, iValue, iText) { return this._listMod('set', iName, iValue, iText) } ,
+    listMove:   function(iName, iValue, iPos)  { return this._listMod('mov', iName, iValue, iPos)  } ,
+    listDelete: function(iName, iValue)        { return this._listMod('del', iName, iValue)        } ,
+    listGet:    function(iName, iValue)        { return this._listMod('get', iName, iValue)        } ,
 
-    listSet: function(iName, iValue, iText) {
+    _listMod: function(iOp, iName, iValue, iData) {
       var aEl = document.getElementById(this.uid + iName);
       if (aEl && aEl.className === 'palmenu') {
         iName += '-menu';
         aEl = aEl.lastChild;
       }
       if (!aEl || !aEl.hasAttribute('cellclass'))
-        throw 'palette.listSet(): list '+iName+' not found in palette';
+        throw 'palette._listMod(): list '+iName+' not found in palette';
+      if (iOp === 'del' && iValue === null) {
+        aEl.innerHTML = '';
+        return;
+      }
       var aCellId = this.uid + (aEl.getAttribute('listname') || iName) +'..'+ iValue;
       var aC = document.getElementById(aCellId);
-      if (!aC) {
-        aC = document.createElement('div');
-        aC.className = aEl.getAttribute('cellclass');
-        aC.id = aCellId;
-        aC.setAttribute('style', aEl.getAttribute('cellstyle'));
-        if (aEl.getAttribute('order') === '-')
-          aEl.insertBefore(aC, aEl.firstChild);
+      switch (iOp) {
+      case 'set':
+        if (!aC) {
+          aC = document.createElement('div');
+          aC.className = aEl.getAttribute('cellclass');
+          aC.id = aCellId;
+          aC.setAttribute('style', aEl.getAttribute('cellstyle'));
+          if (aEl.getAttribute('order') === '-')
+            aEl.insertBefore(aC, aEl.firstChild);
+          else
+            aEl.appendChild(aC);
+        }
+        if (aEl.className === 'palhtml')
+          aC.innerHTML = iData;
+        else
+          aC.textContent = iData;
+        return;
+      case 'mov':
+        if (!aC)
+          throw 'palette.listMove(): item '+iValue+' not found in list '+iName;
+        if (iData < aEl.childNodes.length-1)
+          aEl.insertBefore(aC, aEl.childNodes[iData]);
         else
           aEl.appendChild(aC);
-      }
-      if (aEl.className === 'palhtml')
-        aC.innerHTML = iText;
-      else
-        aC.textContent = iText;
-    } ,
-
-    listMove: function(iName, iValue, iPos) {
-      var aEl = document.getElementById(this.uid + iName);
-      if (aEl && aEl.className === 'palmenu') {
-        iName += '-menu';
-        aEl = aEl.lastChild;
-      }
-      if (!aEl || !aEl.hasAttribute('cellclass'))
-        throw 'palette.listMove(): list '+iName+' not found in palette';
-      var aCellId = this.uid + (aEl.getAttribute('listname') || iName) +'..'+ iValue;
-      var aC = document.getElementById(aCellId);
-      if (!aC)
-        throw 'palette.listMove(): item '+iValue+' not found in list '+iName;
-      if (iPos < aEl.childNodes.length-1)
-        aEl.insertBefore(aC, aEl.childNodes[iPos]);
-      else
-        aEl.appendChild(aC);
-    } ,
-
-    listDelete: function(iName, iValue) {
-      var aEl = document.getElementById(this.uid + iName);
-      if (aEl && aEl.className === 'palmenu') {
-        iName += '-menu';
-        aEl = aEl.lastChild;
-      }
-      if (!aEl || !aEl.hasAttribute('cellclass'))
-        throw 'palette.listDelete(): list '+iName+' not found in palette';
-      if (iValue === null) {
-        aEl.innerHTML = '';
-      } else {
-        var aC = document.getElementById(this.uid + (aEl.getAttribute('listname') || iName) +'..'+ iValue);
+        return;
+      case 'del':
         if (aC)
           aEl.removeChild(aC);
+        return;
+      case 'get':
+        return aC && aC.firstChild;
       }
     } ,
 
