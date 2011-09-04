@@ -302,6 +302,7 @@ suae.paletteMgr = {
       }
     } ,
 
+
     listSet: function(iName, iValue, iText) {
       var aEl = document.getElementById(this.uid + iName);
       if (aEl && aEl.className === 'palmenu') {
@@ -443,6 +444,7 @@ suae.paletteMgr = {
             return;
           iEvt.target.nextSibling.style.display = iEvt.target.nextSibling.style.display ? null : 'block';
           iEvt.target.nextSibling.style.left = -iEvt.target.nextSibling.offsetWidth +'px';
+
           if (iEvt.target.nextSibling.style.display) {
             iEvt.target.parentNode.addEventListener('mouseout', this.evtFn, true);
             iEvt.target.parentNode.addEventListener('mouseover', this.evtFn, true);
