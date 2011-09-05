@@ -2708,7 +2708,8 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
         aRev.oid = aRev.oid.slice(1);
         aRev.map = JSON.parse(aRev.map);
         aRev.parents = JSON.parse(aRev.parents);
-        that.parentMap[sUUId] = +aRev.oid.slice(aRev.oid.indexOf('.')+1);
+        if (!iNoSendCallback)
+          that.parentMap[sUUId] = +aRev.oid.slice(aRev.oid.indexOf('.')+1);
       }
     }, function () {
       if (iNoSendCallback)
