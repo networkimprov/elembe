@@ -1583,6 +1583,7 @@ function Project(iRecord, iCallback) {
       }
       var aNotify = [];
       dbExec(that.db, "BEGIN TRANSACTION", noOpCallback, function() {
+        aNotify.push(iReq.jso);
         for (var a in that.parentMap)
           if (!(a in iReq.jso.parents))
             iReq.jso.parents[a] = 0;
@@ -1673,8 +1674,6 @@ console.log(partlist);
         that.stmt.revisionDiff.finalize();
         delete that.stmt.revisionDiff;
         that.parentMap[iReq.jso.author] = +iReq.jso.oid.slice(iReq.jso.oid.indexOf('.')+1);
-        delete iReq.jso.list;
-        aNotify.push(iReq.jso);
         dbExec(that.db, "UPDATE revision SET parents = '"+JSON.stringify(that.parentMap)+"' WHERE oid = ' ';\
                          COMMIT TRANSACTION;", noOpCallback, function() {
           if (iReq.jso.map.page.sideline)
@@ -1682,6 +1681,7 @@ console.log(partlist);
           else
             aDone();
           function aDone() {
+            delete iReq.jso.list;
             sClients.notify(iReq, aNotify, that.oid);
           }
         });
@@ -2705,11 +2705,12 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
       if (err) throw err;
       if (row) {
         aRev = row;
-        aRev.oid = aRev.oid.slice(1);
         aRev.map = JSON.parse(aRev.map);
         aRev.parents = JSON.parse(aRev.parents);
-        if (!iNoSendCallback)
+        if (!iNoSendCallback) {
+          aRev.oid = aRev.oid.slice(1);
           that.parentMap[sUUId] = +aRev.oid.slice(aRev.oid.indexOf('.')+1);
+        }
       }
     }, function () {
       if (iNoSendCallback)
@@ -2743,10 +2744,8 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
         function aCommit(revdata) {
           dbExec(that.db, "UPDATE revision SET map = NULL, parents = '"+JSON.stringify(that.parentMap)+"' WHERE oid = ' ';\
                            RELEASE commit_revision;", noOpCallback, function () {
-            if (iNoSendCallback) {
-              delete aRev.list;
+            if (iNoSendCallback)
               return iNoSendCallback(aRev);
-            }
             that._finishRevision(that.db, that.revisionMap, revdata && aRev, revdata, function() {
               that.revisionMap = that.revisionMapInit();
               delete aRev.list;
