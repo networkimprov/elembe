@@ -14,7 +14,7 @@ notice to user and set read-only when loaded pages revised/sidelined
   push loaded page to rev cache on user ack
   not for revision author
 
-Sidelining
+Sidelining 
   Fix readRevision for sidelined revisions
   flag when uncommitted revision sidelined
   force save of client data before applying incoming rev?

@@ -2348,7 +2348,7 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
     if (!that.stmt.readPageRevision) {
       that.stmt.readPageRevision = {
         getPage: "SELECT data, layout FROM page WHERE oid = ?",
-        pageRevision: "SELECT oid, map FROM revision WHERE oid != ' ' ORDER BY ROWID DESC",
+        pageRevision: "SELECT oid, map, sideline FROM revision WHERE oid != ' ' ORDER BY ROWID DESC",
         getDiff: "SELECT data FROM diff WHERE revision = ? AND object = ?"
       };
       dbPrepare(that.db, that.stmt.readPageRevision, function(err) {
@@ -2381,6 +2381,10 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
     }
     that.stmt.readPageRevision.pageRevision.step(function(err, row) {
       if (err) throw err;
+      if (row.sideline) {
+        that.handle_readPageRevision(iReq, iData);
+        return;
+      }
       if (row.oid === iReq.revision) {
         that.stmt.readPageRevision.pageRevision.reset();
         aCompleteCache(0);
