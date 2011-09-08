@@ -1790,12 +1790,17 @@ console.log(partlist);
         aLogConflict(iRevision, { rowid:row.rowid+1, oid:' ', map:that.revisionMap, parents:that.parentMap, author:sUUId }, 'chain');
       }
       var aOidCounter = +row.oid.slice(row.oid.indexOf('.')+1);
-      if (aOidCounter > iRevision.parents[row.author]) {
+      if (aOidCounter  >  iRevision.parents[row.author]
+       || aOidCounter === iRevision.parents[row.author] && row.sideline) {
         row.map = JSON.parse(row.map);
         row.parents = JSON.parse(row.parents);
+        if (aOidCounter === iRevision.parents[row.author]) {
+          row.sidelinedParent = true;
+          row.sideline = null;
+        }
         aLogConflict(iRevision, row, 'chain');
         if (iRevision.parents[row.author] === 0 && !(row.author in row.parents))
-          aOidCounter = 0;
+          aOidCounter = iRevision.parents[row.author];
       }
       if (aOidCounter === iRevision.parents[row.author]) {
         iRevision._parents[row.author] = iRevision.parents[row.author];
@@ -1869,7 +1874,7 @@ console.log(partlist);
         var aSidelinedCurr = iConflict[0].oid === ' ';
         if (!aSidelinedCurr || iConflict.length > 1)
           for (var a=iConflict.length-1; a >= 0; --a)
-            if (aAuthorJoined > iConflict[a].joined)
+            if (iConflict[a].sidelinedParent || aAuthorJoined > iConflict[a].joined)
               return iCallback(iConflict[a].oid);
         dbResults(that.stmt.checkConflict.state, 'state', function(states) {
           var aRevN = 0;
