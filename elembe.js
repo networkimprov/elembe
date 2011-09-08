@@ -1873,7 +1873,7 @@ console.log(partlist);
         var aAuthorJoined = iConflict.pop().joined;
         var aSidelinedCurr = iConflict[0].oid === ' ';
         if (!aSidelinedCurr || iConflict.length > 1)
-          for (var a=iConflict.length-1; a >= 0; --a)
+          for (var a=iConflict.length-1; a >= +aSidelinedCurr; --a)
             if (iConflict[a].sidelinedParent || aAuthorJoined > iConflict[a].joined)
               return iCallback(iConflict[a].oid);
         dbResults(that.stmt.checkConflict.state, 'state', function(states) {
