@@ -1790,8 +1790,8 @@ console.log(partlist);
         aLogConflict(iRevision, { rowid:row.rowid+1, oid:' ', map:that.revisionMap, parents:that.parentMap, author:sUUId }, 'chain');
       }
       var aOidCounter = +row.oid.slice(row.oid.indexOf('.')+1);
-      if (aOidCounter  >  iRevision.parents[row.author]
-       || aOidCounter === iRevision.parents[row.author] && row.sideline) {
+      if (aOidCounter > iRevision.parents[row.author]
+       || row.author === iRevision.author && row.sideline) {
         row.map = JSON.parse(row.map);
         row.parents = JSON.parse(row.parents);
         if (aOidCounter === iRevision.parents[row.author]) {
