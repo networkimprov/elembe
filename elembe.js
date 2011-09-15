@@ -1592,13 +1592,16 @@ console.log(partlist);
           iReq.jso.sideline = sideline;
           if (partlist)
             iReq.jso.map.page.sideline = {part:partlist};
+          if (!sideline)
+            that.parentMap[iReq.jso.author] = +iReq.jso.oid.slice(iReq.jso.oid.indexOf('.')+1);
           dbExec(that.db, "INSERT INTO revision VALUES (\
-                       '"+(sideline ? '' : '!')+iReq.jso.oid+"', \
-                       '"+iReq.jso.author+"', \
-                       '"+iReq.jso.date+"', \
-                       '"+JSON.stringify(iReq.jso.map)+"', \
-                       '"+JSON.stringify(iReq.jso.parents)+"', \
-                       "+(sideline ? "'"+sideline+"'" : "NULL")+")", noOpCallback, aIter);
+                            '"+(sideline ? '' : '!')+iReq.jso.oid+"', \
+                            '"+iReq.jso.author+"', \
+                            '"+iReq.jso.date+"', \
+                            '"+JSON.stringify(iReq.jso.map)+"', \
+                            '"+JSON.stringify(iReq.jso.parents)+"', \
+                            "+(sideline ? "'"+sideline+"'" : "NULL")+"); \
+                          "+(sideline ? "" : "UPDATE revision SET parents = '"+JSON.stringify(that.parentMap)+"' WHERE oid = ' ';"), noOpCallback, aIter);
         });
       });
       function aIter(iterN, iterO) {
@@ -1607,7 +1610,7 @@ console.log(partlist);
           var aStart = iterO;
           iterO += iReq.jso.list[iterN].size;
           var aDiff = iReq.jso.list[iterN].type === 'part' ? iReq.data.slice(aStart, iterO) : iReq.data.toString('ascii', aStart, iterO);
-          if (!iReq.jso.map.page.sideline)
+          if (iReq.jso.sideline)
             return aSetDiff(aDiff);
           switch(iReq.jso.list[iterN].type) {
           case 'proj':
@@ -1673,10 +1676,8 @@ console.log(partlist);
         }
         that.stmt.revisionDiff.finalize();
         delete that.stmt.revisionDiff;
-        that.parentMap[iReq.jso.author] = +iReq.jso.oid.slice(iReq.jso.oid.indexOf('.')+1);
-        dbExec(that.db, "UPDATE revision SET parents = '"+JSON.stringify(that.parentMap)+"' WHERE oid = ' ';\
-                         COMMIT TRANSACTION;", noOpCallback, function() {
-          if (iReq.jso.map.page.sideline)
+        dbExec(that.db, "COMMIT TRANSACTION", noOpCallback, function() {
+          if (!iReq.jso.sideline)
             that._finishRevision(that.db, iReq.jso.map, null, null, aDone);
           else
             aDone();
@@ -1989,6 +1990,8 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
             that.stmt.checkConflict.setrev.step(function(err, row) {
               if (err) throw err;
               that.stmt.checkConflict.setrev.reset();
+              if (that.parentMap[iConflict[aRevN].author] === iConflict[aRevN].oid.slice(iConflict[aRevN].oid.indexOf('.')+1))
+                that.parentMap[iConflict[aRevN].author] = iConflict[aRevN].parents[iConflict[aRevN].author];
               oNotify.push({type:'revisionsideline', oid:iConflict[aRevN].oid});
               if (++aRevN < iConflict.length)
                 aSideline();
