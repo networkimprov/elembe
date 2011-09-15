@@ -1759,7 +1759,7 @@ console.log(partlist);
     });
   };
 
-  Project.prototype.checkConflict = function(iRevision, oNotify, iCallback, iConflict, iChain) {
+  Project.prototype.checkConflict = function(iRevision, oNotify, iCallback, _state) {
     var that = this;
     if (!that.stmt.checkConflict) {
       that.stmt.checkConflict = {
@@ -1784,10 +1784,8 @@ console.log(partlist);
     that.stmt.checkConflict.revision.step(function(err, row) {
       if (err) throw err;console.log( iRevision.parents);
       if (row.oid === ' ') throw new Error('parent not found');
-      if (!iConflict) {
-        iConflict = [];
-        iChain = {};
-        iRevision._parents = {};
+      if (!_state) {
+        _state = { conflict:[], chain:{}, parents:{} };
         aLogConflict(iRevision, { rowid:row.rowid+1, oid:' ', map:that.revisionMap, parents:that.parentMap, author:sUUId }, 'chain');
       }
       var aOidCounter = +row.oid.slice(row.oid.indexOf('.')+1);
@@ -1804,23 +1802,21 @@ console.log(partlist);
           aOidCounter = iRevision.parents[row.author];
       }
       if (aOidCounter === iRevision.parents[row.author]) {
-        iRevision._parents[row.author] = iRevision.parents[row.author];
+        _state.parents[row.author] = iRevision.parents[row.author];
         delete iRevision.parents[row.author];
         for (var any in iRevision.parents) break;
-        if (!any) {
-          iRevision.parents = iRevision._parents;
-          delete iRevision._parents;
-        }
+        if (!any)
+          iRevision.parents = _state.parents;
       }
-      if (iRevision._parents)
-        return that.checkConflict(iRevision, oNotify, iCallback, iConflict, iChain);
+      if (iRevision.parents !== _state.parents)
+        return that.checkConflict(iRevision, oNotify, iCallback, _state);
       function aLogConflict(main, alt, chain) {
         if (chain) {
           for (var a in alt.parents) {
             var aP = a+'.'+alt.parents[a];
-            if (!iChain[aP])
-              iChain[aP] = {};
-            iChain[aP][alt.oid] = alt;
+            if (!_state.chain[aP])
+              _state.chain[aP] = {};
+            _state.chain[aP][alt.oid] = alt;
           }
         }
         if (!alt.sideline) {
@@ -1839,44 +1835,44 @@ console.log(partlist);
         aRecur();
         function aRecur(hasConflict) {
           if (hasConflict) {
-            for (var a=0; a < iConflict.length && alt.rowid < iConflict[a].rowid; ++a) {}
-            iConflict.splice(a, 0, alt);
+            for (var a=0; a < _state.conflict.length && alt.rowid < _state.conflict[a].rowid; ++a) {}
+            _state.conflict.splice(a, 0, alt);
             alt.sideline = true;
           }
-          if (!iChain[alt.oid])
+          if (!_state.chain[alt.oid])
             return;
           if (!chain)
-            for (var a in iChain[alt.oid])
-              aLogConflict(main, iChain[alt.oid][a]);
+            for (var a in _state.chain[alt.oid])
+              aLogConflict(main, _state.chain[alt.oid][a]);
           if (hasConflict)
-            for (var a in iChain[alt.oid])
-              aLogConflict(alt, iChain[alt.oid][a]);
+            for (var a in _state.chain[alt.oid])
+              aLogConflict(alt, _state.chain[alt.oid][a]);
         }
       }
       that.stmt.checkConflict.revision.reset();
-      if (iConflict.length === 0)
+      if (_state.conflict.length === 0)
         return iCallback(null, {});
-      iConflict.push({author:iRevision.author});
+      _state.conflict.push({author:iRevision.author});
       aCheckPermission();
       function aCheckPermission() {
-        for (var a=0; a < iConflict.length; ++a) {
-          if (iConflict[a].joined)
+        for (var a=0; a < _state.conflict.length; ++a) {
+          if (_state.conflict[a].joined)
             continue;
-          that.stmt.checkConflict.member.bind(1, iConflict[a].author);
+          that.stmt.checkConflict.member.bind(1, _state.conflict[a].author);
           that.stmt.checkConflict.member.step(function(err, row) {
             if (err) throw err;
             that.stmt.checkConflict.member.reset();
-            iConflict[a].joined = row.joined;
+            _state.conflict[a].joined = row.joined;
             aCheckPermission();
           });
           return;
         }
-        var aAuthorJoined = iConflict.pop().joined;
-        var aSidelinedCurr = iConflict[0].oid === ' ';
-        if (!aSidelinedCurr || iConflict.length > 1)
-          for (var a=iConflict.length-1; a >= +aSidelinedCurr; --a)
-            if (iConflict[a].sidelinedParent || aAuthorJoined > iConflict[a].joined)
-              return iCallback(iConflict[a].oid);
+        var aAuthorJoined = _state.conflict.pop().joined;
+        var aSidelinedCurr = _state.conflict[0].oid === ' ';
+        if (!aSidelinedCurr || _state.conflict.length > 1)
+          for (var a=_state.conflict.length-1; a >= +aSidelinedCurr; --a)
+            if (_state.conflict[a].sidelinedParent || aAuthorJoined > _state.conflict[a].joined)
+              return iCallback(_state.conflict[a].oid);
         dbResults(that.stmt.checkConflict.state, 'state', function(states) {
           var aRevN = 0;
           var aModList = { proj:{}, page:{}, part:{} };
@@ -1886,18 +1882,19 @@ console.log(partlist);
             aSideline();
           function aSideline(newrev) {
             if (newrev) {
-              iConflict[0].oid = newrev.oid;
+              _state.conflict[0].oid = newrev.oid;
               oNotify.push(newrev);
             }
+            var aConflict = _state.conflict[aRevN];
             var aObject;
-console.log(iConflict[aRevN], iConflict[aRevN].map);
-            for (var aPg in iConflict[aRevN].map.page) {
-              for (var aPt in iConflict[aRevN].map.page[aPg].part) break;
-              aObject = aPt || iConflict[aRevN].map.page[aPg].op !== '.' && aPg;
+console.log(aConflict, aConflict.map);
+            for (var aPg in aConflict.map.page) {
+              for (var aPt in aConflict.map.page[aPg].part) break;
+              aObject = aPt || aConflict.map.page[aPg].op !== '.' && aPg;
               if (aPt) {
-                delete iConflict[aRevN].map.page[aPg].part[aPt];
+                delete aConflict.map.page[aPg].part[aPt];
               } else {
-                delete iConflict[aRevN].map.page[aPg];
+                delete aConflict.map.page[aPg];
                 for (var a=0; a < states.length; ++a) {
                   if (!states[a].state.page[aPg] || !states[a].state.page[aPg][' '])
                     continue;
@@ -1911,15 +1908,15 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
                 break;
               }
             }
-            if (!aObject && iConflict[aRevN].map.touch) {
-              delete iConflict[aRevN].map.touch;
+            if (!aObject && aConflict.map.touch) {
+              delete aConflict.map.touch;
               aObject = that.oid;
               if (!aModList.proj[aObject])
                 aModList.proj[aObject] = null;
             }
             if (aObject) {
     console.log(aObject);
-              that.stmt.checkConflict.diff.bind(1, iConflict[aRevN].oid);
+              that.stmt.checkConflict.diff.bind(1, aConflict.oid);
               that.stmt.checkConflict.diff.bind(2, aObject);
               that.stmt.checkConflict.diff.step(function(err, diffRow) {
                 if (err) throw err;
@@ -1938,7 +1935,7 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
                     if (err && err.errno !== process.ENOENT) throw err;
                     xdDiff(!err && aPath+'.temp', aModList.part[aObject] || (aSidelinedCurr && aRevN === 0 ? aPath+'.w' : aPath), function(err, diff) {
                       if (err) throw err;
-                      that.stmt.checkConflict.setdiff.bind(1, iConflict[aRevN].oid);
+                      that.stmt.checkConflict.setdiff.bind(1, aConflict.oid);
                       that.stmt.checkConflict.setdiff.bind(2, aObject);
                       that.stmt.checkConflict.setdiff.bind(3, diff);
                       that.stmt.checkConflict.setdiff.step(function(err, row) {
@@ -1985,15 +1982,15 @@ console.log(iConflict[aRevN], iConflict[aRevN].map);
               });
               return;
             }
-            that.stmt.checkConflict.setrev.bind(1, iConflict[aRevN].oid);
+            that.stmt.checkConflict.setrev.bind(1, aConflict.oid);
             that.stmt.checkConflict.setrev.bind(2, iRevision.oid);
             that.stmt.checkConflict.setrev.step(function(err, row) {
               if (err) throw err;
               that.stmt.checkConflict.setrev.reset();
-              if (that.parentMap[iConflict[aRevN].author] === iConflict[aRevN].oid.slice(iConflict[aRevN].oid.indexOf('.')+1))
-                that.parentMap[iConflict[aRevN].author] = iConflict[aRevN].parents[iConflict[aRevN].author];
-              oNotify.push({type:'revisionsideline', oid:iConflict[aRevN].oid});
-              if (++aRevN < iConflict.length)
+              if (that.parentMap[aConflict.author] === aConflict.oid.slice(aConflict.oid.indexOf('.')+1))
+                that.parentMap[aConflict.author] = aConflict.parents[aConflict.author];
+              oNotify.push({type:'revisionsideline', oid:aConflict.oid});
+              if (++aRevN < _state.conflict.length)
                 aSideline();
               else
                 aSaveState();
