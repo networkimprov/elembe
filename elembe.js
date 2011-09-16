@@ -1785,23 +1785,22 @@ console.log(partlist);
       if (err) throw err;console.log( iRevision.parents);
       if (row.oid === ' ') throw new Error('parent not found');
       if (!_state) {
-        _state = { conflict:[], chain:{}, parents:{} };
+        _state = { conflict:[], chain:{}, parents:{}, ancestors:{} };
+        for (var a in iRevision.parents)
+          _state.ancestors[a] = iRevision.parents[a];
         aLogConflict(iRevision, { rowid:row.rowid+1, oid:' ', map:that.revisionMap, parents:that.parentMap, author:sUUId }, 'chain');
       }
       var aOidCounter = +row.oid.slice(row.oid.indexOf('.')+1);
-      if (aOidCounter > iRevision.parents[row.author]
-       || row.author === iRevision.author && row.sideline) {
-        row.map = JSON.parse(row.map);
-        row.parents = JSON.parse(row.parents);
-        if (aOidCounter === iRevision.parents[row.author]) {
-          row.sidelinedParent = true;
-          row.sideline = null;
-        }
-        aLogConflict(iRevision, row, 'chain');
-        if (iRevision.parents[row.author] === 0 && !(row.author in row.parents))
-          aOidCounter = iRevision.parents[row.author];
+      row.map = JSON.parse(row.map);
+      row.parents = JSON.parse(row.parents);
+      if (aOidCounter === _state.ancestors[row.author]) {
+        _state.ancestors[row.author] = row.parents[row.author];
+        if (row.sideline)
+          row.sidelinedParent = row.sideline;
+        row.sideline = !row.sideline;
       }
-      if (aOidCounter === iRevision.parents[row.author]) {
+      aLogConflict(iRevision, row, 'chain');
+      if (!(row.author in row.parents) || aOidCounter === iRevision.parents[row.author]) {
         _state.parents[row.author] = iRevision.parents[row.author];
         delete iRevision.parents[row.author];
         for (var any in iRevision.parents) break;
@@ -1813,6 +1812,8 @@ console.log(partlist);
       function aLogConflict(main, alt, chain) {
         if (chain) {
           for (var a in alt.parents) {
+            if (alt.parents[a] === 0)
+              continue;
             var aP = a+'.'+alt.parents[a];
             if (!_state.chain[aP])
               _state.chain[aP] = {};
