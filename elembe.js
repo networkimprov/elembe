@@ -1763,7 +1763,8 @@ console.log(partlist);
     var that = this;
     if (!that.stmt.checkConflict) {
       that.stmt.checkConflict = {
-        revision: "SELECT rowid, oid, map, parents, sideline, author FROM revision ORDER BY rowid DESC",
+        revision: "SELECT revision.rowid, oid, map, parents, sideline, author, member.joined \
+                    FROM revision INNER JOIN member ON author = member.uid ORDER BY revision.rowid DESC",
         member: "SELECT joined FROM member WHERE uid = ?",
         diff: "SELECT data FROM diff WHERE revision = ? AND object = ?",
         page: "SELECT data, layout FROM page WHERE oid = ?",
@@ -1783,12 +1784,12 @@ console.log(partlist);
     }
     that.stmt.checkConflict.revision.step(function(err, row) {
       if (err) throw err;console.log( iRevision.parents);
-      if (row.oid === ' ') throw new Error('parent not found');
+      if (!row) throw new Error('parent not found');
       if (!_state) {
         _state = { conflict:[], chain:{}, parents:{}, ancestors:{} };
         for (var a in iRevision.parents)
           _state.ancestors[a] = iRevision.parents[a];
-        aLogConflict(iRevision, { rowid:row.rowid+1, oid:' ', map:that.revisionMap, parents:that.parentMap, author:sUUId }, 'chain');
+        aLogConflict(iRevision, { rowid:row.rowid+1, oid:' ', map:that.revisionMap, parents:that.parentMap, author:sUUId, joined:'3333' }, 'chain');
       }
       var aOidCounter = +row.oid.slice(row.oid.indexOf('.')+1);
       row.map = JSON.parse(row.map);
@@ -1853,26 +1854,14 @@ console.log(partlist);
       that.stmt.checkConflict.revision.reset();
       if (_state.conflict.length === 0)
         return iCallback(null, {});
-      _state.conflict.push({author:iRevision.author});
-      aCheckPermission();
-      function aCheckPermission() {
-        for (var a=0; a < _state.conflict.length; ++a) {
-          if (_state.conflict[a].joined)
-            continue;
-          that.stmt.checkConflict.member.bind(1, _state.conflict[a].author);
-          that.stmt.checkConflict.member.step(function(err, row) {
-            if (err) throw err;
-            that.stmt.checkConflict.member.reset();
-            _state.conflict[a].joined = row.joined;
-            aCheckPermission();
-          });
-          return;
-        }
-        var aAuthorJoined = _state.conflict.pop().joined;
+      that.stmt.checkConflict.member.bind(1, iRevision.author);
+      that.stmt.checkConflict.member.step(function(err, author) {
+        if (err) throw err;
+        that.stmt.checkConflict.member.reset();
         var aSidelinedCurr = _state.conflict[0].oid === ' ';
         if (!aSidelinedCurr || _state.conflict.length > 1)
           for (var a=_state.conflict.length-1; a >= +aSidelinedCurr; --a)
-            if (_state.conflict[a].sidelinedParent || aAuthorJoined > _state.conflict[a].joined)
+            if (_state.conflict[a].sidelinedParent || author.joined > _state.conflict[a].joined)
               return iCallback(_state.conflict[a].oid);
         dbResults(that.stmt.checkConflict.state, 'state', function(states) {
           var aRevN = 0;
@@ -2015,7 +2004,7 @@ console.log(aConflict, aConflict.map);
             });
           }
         });
-      }
+      });
     });  
   };
 
