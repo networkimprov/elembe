@@ -1782,11 +1782,20 @@ console.log(partlist);
       });
       return;
     }
+    if (!_state) {
+      that.stmt.checkConflict.member.bind(1, iRevision.author);
+      that.stmt.checkConflict.member.step(function(err, author) {
+        if (err) throw err;
+        that.stmt.checkConflict.member.reset();
+        that.checkConflict(iRevision, oNotify, iCallback, author.joined);
+      });
+      return;
+    }
     that.stmt.checkConflict.revision.step(function(err, row) {
       if (err) throw err;console.log( iRevision.parents);
       if (!row) throw new Error('parent not found');
-      if (!_state) {
-        _state = { conflict:[], chain:{}, parents:{}, ancestors:{} };
+      if (typeof _state === 'string') {
+        _state = { conflict:[], chain:{}, parents:{}, ancestors:{}, authorJoined:_state };
         for (var a in iRevision.parents)
           _state.ancestors[a] = iRevision.parents[a];
         aLogConflict(iRevision, { rowid:row.rowid+1, oid:' ', map:that.revisionMap, parents:that.parentMap, author:sUUId, joined:'3333' }, 'chain');
@@ -1854,156 +1863,150 @@ console.log(partlist);
       that.stmt.checkConflict.revision.reset();
       if (_state.conflict.length === 0)
         return iCallback(null, {});
-      that.stmt.checkConflict.member.bind(1, iRevision.author);
-      that.stmt.checkConflict.member.step(function(err, author) {
-        if (err) throw err;
-        that.stmt.checkConflict.member.reset();
-        var aSidelinedCurr = _state.conflict[0].oid === ' ';
-        if (!aSidelinedCurr || _state.conflict.length > 1)
-          for (var a=_state.conflict.length-1; a >= +aSidelinedCurr; --a)
-            if (_state.conflict[a].sidelinedParent || author.joined > _state.conflict[a].joined)
-              return iCallback(_state.conflict[a].oid);
-        dbResults(that.stmt.checkConflict.state, 'state', function(states) {
-          var aRevN = 0;
-          var aModList = { proj:{}, page:{}, part:{} };
-          if (aSidelinedCurr)
-            that.handle_commitRevision(null, aSideline);
-          else
-            aSideline();
-          function aSideline(newrev) {
-            if (newrev) {
-              _state.conflict[0].oid = newrev.oid;
-              oNotify.push(newrev);
-            }
-            var aConflict = _state.conflict[aRevN];
-            var aObject;
+      var aSidelinedCurr = _state.conflict[0].oid === ' ';
+      for (var a=_state.conflict.length-1; a >= +aSidelinedCurr; --a)
+        if (_state.conflict[a].sidelinedParent || _state.conflict[a].joined < _state.authorJoined)
+          return iCallback(_state.conflict[a].oid);
+      dbResults(that.stmt.checkConflict.state, 'state', function(states) {
+        var aRevN = 0;
+        var aModList = { proj:{}, page:{}, part:{} };
+        if (aSidelinedCurr)
+          that.handle_commitRevision(null, aSideline);
+        else
+          aSideline();
+        function aSideline(newrev) {
+          if (newrev) {
+            _state.conflict[0].oid = newrev.oid;
+            oNotify.push(newrev);
+          }
+          var aConflict = _state.conflict[aRevN];
+          var aObject;
 console.log(aConflict, aConflict.map);
-            for (var aPg in aConflict.map.page) {
-              for (var aPt in aConflict.map.page[aPg].part) break;
-              aObject = aPt || aConflict.map.page[aPg].op !== '.' && aPg;
-              if (aPt) {
-                delete aConflict.map.page[aPg].part[aPt];
-              } else {
-                delete aConflict.map.page[aPg];
-                for (var a=0; a < states.length; ++a) {
-                  if (!states[a].state.page[aPg] || !states[a].state.page[aPg][' '])
-                    continue;
-                  delete states[a].state.page[aPg][' '];
-                  states[a]._update = true;
-                }
+          for (var aPg in aConflict.map.page) {
+            for (var aPt in aConflict.map.page[aPg].part) break;
+            aObject = aPt || aConflict.map.page[aPg].op !== '.' && aPg;
+            if (aPt) {
+              delete aConflict.map.page[aPg].part[aPt];
+            } else {
+              delete aConflict.map.page[aPg];
+              for (var a=0; a < states.length; ++a) {
+                if (!states[a].state.page[aPg] || !states[a].state.page[aPg][' '])
+                  continue;
+                delete states[a].state.page[aPg][' '];
+                states[a]._update = true;
               }
-              if (aObject) {
-                if (!aModList[aPt?'part':'page'][aObject])
-                  aModList[aPt?'part':'page'][aObject] = null;
-                break;
-              }
-            }
-            if (!aObject && aConflict.map.touch) {
-              delete aConflict.map.touch;
-              aObject = that.oid;
-              if (!aModList.proj[aObject])
-                aModList.proj[aObject] = null;
             }
             if (aObject) {
-    console.log(aObject);
-              that.stmt.checkConflict.diff.bind(1, aConflict.oid);
-              that.stmt.checkConflict.diff.bind(2, aObject);
-              that.stmt.checkConflict.diff.step(function(err, diffRow) {
-                if (err) throw err;
-                that.stmt.checkConflict.diff.reset();
-                if (aObject in aModList.part) {
-                  var aPath = getPath(aObject);
-                  if (!diffRow.data) {
-                    //. flag file for removal by finishRevision
-                    aForwardDiff({errno:process.ENOENT});
-                  } else if (aSidelinedCurr && aRevN === 0) {
-                    dupFile(aPath, aPath+'.temp', aForwardDiff);
-                  } else {
-                    xdPatch(aModList.part[aObject] || aPath, diffRow.data, aPath+'.temp', aForwardDiff);
-                  }
-                  function aForwardDiff(err) {
-                    if (err && err.errno !== process.ENOENT) throw err;
-                    xdDiff(!err && aPath+'.temp', aModList.part[aObject] || (aSidelinedCurr && aRevN === 0 ? aPath+'.w' : aPath), function(err, diff) {
+              if (!aModList[aPt?'part':'page'][aObject])
+                aModList[aPt?'part':'page'][aObject] = null;
+              break;
+            }
+          }
+          if (!aObject && aConflict.map.touch) {
+            delete aConflict.map.touch;
+            aObject = that.oid;
+            if (!aModList.proj[aObject])
+              aModList.proj[aObject] = null;
+          }
+          if (aObject) {
+  console.log(aObject);
+            that.stmt.checkConflict.diff.bind(1, aConflict.oid);
+            that.stmt.checkConflict.diff.bind(2, aObject);
+            that.stmt.checkConflict.diff.step(function(err, diffRow) {
+              if (err) throw err;
+              that.stmt.checkConflict.diff.reset();
+              if (aObject in aModList.part) {
+                var aPath = getPath(aObject);
+                if (!diffRow.data) {
+                  //. flag file for removal by finishRevision
+                  aForwardDiff({errno:process.ENOENT});
+                } else if (aSidelinedCurr && aRevN === 0) {
+                  dupFile(aPath, aPath+'.temp', aForwardDiff);
+                } else {
+                  xdPatch(aModList.part[aObject] || aPath, diffRow.data, aPath+'.temp', aForwardDiff);
+                }
+                function aForwardDiff(err) {
+                  if (err && err.errno !== process.ENOENT) throw err;
+                  xdDiff(!err && aPath+'.temp', aModList.part[aObject] || (aSidelinedCurr && aRevN === 0 ? aPath+'.w' : aPath), function(err, diff) {
+                    if (err) throw err;
+                    that.stmt.checkConflict.setdiff.bind(1, aConflict.oid);
+                    that.stmt.checkConflict.setdiff.bind(2, aObject);
+                    that.stmt.checkConflict.setdiff.bind(3, diff);
+                    that.stmt.checkConflict.setdiff.step(function(err, row) {
                       if (err) throw err;
-                      that.stmt.checkConflict.setdiff.bind(1, aConflict.oid);
-                      that.stmt.checkConflict.setdiff.bind(2, aObject);
-                      that.stmt.checkConflict.setdiff.bind(3, diff);
-                      that.stmt.checkConflict.setdiff.step(function(err, row) {
-                        if (err) throw err;
-                        that.stmt.checkConflict.setdiff.reset();
-                        fs.rename(aPath+'.temp', aPath+'.new', function(err) {
-                          if (err && err.errno !== process.ENOENT) throw err;
-                          if (!err && !aModList.part[aObject])
-                            aModList.part[aObject] = aPath+'.new';
-                          aSideline();
-                        });
+                      that.stmt.checkConflict.setdiff.reset();
+                      fs.rename(aPath+'.temp', aPath+'.new', function(err) {
+                        if (err && err.errno !== process.ENOENT) throw err;
+                        if (!err && !aModList.part[aObject])
+                          aModList.part[aObject] = aPath+'.new';
+                        aSideline();
                       });
                     });
-                  }
-                } else {
-                  var aType = aObject in aModList.page ? 'page' : 'proj';
-                  if (!aModList[aType][aObject]) {
-                    that.stmt.checkConflict[aType].bind(1, aObject);
-                    that.stmt.checkConflict[aType].step(function(err, row) {
-                      if (err) throw err;
-                      that.stmt.checkConflict[aType].reset();
-                      if (aType === 'page')
-                        row.layout = JSON.parse(row.layout);
-                      row.data = JSON.parse(row.data);
-                      aModList[aType][aObject] = row;
-                      aUpdateData();
-                    });
-                  } else {
-                    aUpdateData();
-                  }
-                  function aUpdateData() {
-                    that.unpatch(aModList[aType][aObject], JSON.parse(diffRow.data));
-                    that.stmt.checkConflict['set'+aType].bind(1, aObject);
-                    that.stmt.checkConflict['set'+aType].bind(2, JSON.stringify(aModList[aType][aObject].data));
-                    if (aType === 'page')
-                      that.stmt.checkConflict['set'+aType].bind(3, JSON.stringify(aModList[aType][aObject].layout));
-                    that.stmt.checkConflict['set'+aType].step(function(err, row) {
-                      if (err) throw err;
-                      that.stmt.checkConflict['set'+aType].reset();
-                      aSideline();
-                    });
-                  }
-                }
-              });
-              return;
-            }
-            that.stmt.checkConflict.setrev.bind(1, aConflict.oid);
-            that.stmt.checkConflict.setrev.bind(2, iRevision.oid);
-            that.stmt.checkConflict.setrev.step(function(err, row) {
-              if (err) throw err;
-              that.stmt.checkConflict.setrev.reset();
-              if (that.parentMap[aConflict.author] === aConflict.oid.slice(aConflict.oid.indexOf('.')+1))
-                that.parentMap[aConflict.author] = aConflict.parents[aConflict.author];
-              oNotify.push({type:'revisionsideline', oid:aConflict.oid});
-              if (++aRevN < _state.conflict.length)
-                aSideline();
-              else
-                aSaveState();
-              function aSaveState() {
-                for (var a=0; a < states.length; ++a) {
-                  if (!states[a]._update)
-                    continue;
-                  delete states[a]._update;
-                  that.stmt.checkConflict.setstate.bind(1, states[a].client);
-                  that.stmt.checkConflict.setstate.bind(2, JSON.stringify(states[a].state));
-                  that.stmt.checkConflict.setstate.step(function(err, row) {
-                    if (err) throw err;
-                    that.stmt.checkConflict.setstate.reset();
-                    aSaveState();
                   });
-                  //. notify subscribers whose state changed
-                  return;
                 }
-                iCallback(null, aModList.part);
+              } else {
+                var aType = aObject in aModList.page ? 'page' : 'proj';
+                if (!aModList[aType][aObject]) {
+                  that.stmt.checkConflict[aType].bind(1, aObject);
+                  that.stmt.checkConflict[aType].step(function(err, row) {
+                    if (err) throw err;
+                    that.stmt.checkConflict[aType].reset();
+                    if (aType === 'page')
+                      row.layout = JSON.parse(row.layout);
+                    row.data = JSON.parse(row.data);
+                    aModList[aType][aObject] = row;
+                    aUpdateData();
+                  });
+                } else {
+                  aUpdateData();
+                }
+                function aUpdateData() {
+                  that.unpatch(aModList[aType][aObject], JSON.parse(diffRow.data));
+                  that.stmt.checkConflict['set'+aType].bind(1, aObject);
+                  that.stmt.checkConflict['set'+aType].bind(2, JSON.stringify(aModList[aType][aObject].data));
+                  if (aType === 'page')
+                    that.stmt.checkConflict['set'+aType].bind(3, JSON.stringify(aModList[aType][aObject].layout));
+                  that.stmt.checkConflict['set'+aType].step(function(err, row) {
+                    if (err) throw err;
+                    that.stmt.checkConflict['set'+aType].reset();
+                    aSideline();
+                  });
+                }
               }
             });
+            return;
           }
-        });
+          that.stmt.checkConflict.setrev.bind(1, aConflict.oid);
+          that.stmt.checkConflict.setrev.bind(2, iRevision.oid);
+          that.stmt.checkConflict.setrev.step(function(err, row) {
+            if (err) throw err;
+            that.stmt.checkConflict.setrev.reset();
+            if (that.parentMap[aConflict.author] === aConflict.oid.slice(aConflict.oid.indexOf('.')+1))
+              that.parentMap[aConflict.author] = aConflict.parents[aConflict.author];
+            oNotify.push({type:'revisionsideline', oid:aConflict.oid});
+            if (++aRevN < _state.conflict.length)
+              aSideline();
+            else
+              aSaveState();
+            function aSaveState() {
+              for (var a=0; a < states.length; ++a) {
+                if (!states[a]._update)
+                  continue;
+                delete states[a]._update;
+                that.stmt.checkConflict.setstate.bind(1, states[a].client);
+                that.stmt.checkConflict.setstate.bind(2, JSON.stringify(states[a].state));
+                that.stmt.checkConflict.setstate.step(function(err, row) {
+                  if (err) throw err;
+                  that.stmt.checkConflict.setstate.reset();
+                  aSaveState();
+                });
+                //. notify subscribers whose state changed
+                return;
+              }
+              iCallback(null, aModList.part);
+            }
+          });
+        }
       });
     });  
   };
