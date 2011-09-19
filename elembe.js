@@ -1830,7 +1830,7 @@ console.log(partlist);
             _state.chain[aP][alt.oid] = alt;
           }
         }
-        if (!alt.sideline) {
+        if (!alt.sideline || !chain && main.joined > alt.joined) {
           if (alt.map.touch && main.map.touch)
             return aRecur(true);
           for (var aPg in main.map.page) {
@@ -1843,12 +1843,16 @@ console.log(partlist);
             }
           }
         }
-        aRecur();
+        return aRecur(false);
         function aRecur(hasConflict) {
           if (hasConflict) {
-            for (var a=0; a < _state.conflict.length && alt.rowid < _state.conflict[a].rowid; ++a) {}
-            _state.conflict.splice(a, 0, alt);
-            alt.sideline = true;
+            if (!alt.sideline) {
+              for (var a=0; a < _state.conflict.length && alt.rowid < _state.conflict[a].rowid; ++a) {}
+              _state.conflict.splice(a, 0, alt);
+              alt.sideline = true;
+            }
+            if (!chain && main.joined > alt.joined)
+              alt.joined = main.joined;
           }
           if (!_state.chain[alt.oid])
             return;
