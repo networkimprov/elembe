@@ -2343,7 +2343,7 @@ console.log(aConflict, aConflict.map);
   };
 
   Project.prototype.readPageRevision = { page:true, revision:true };
-  Project.prototype.handle_readPageRevision = function(iReq, iData) {
+  Project.prototype.handle_readPageRevision = function(iReq, _state) {
     var that = this;
     if (!that.stmt.readPageRevision) {
       that.stmt.readPageRevision = {
@@ -2358,7 +2358,7 @@ console.log(aConflict, aConflict.map);
       return;
     }
     var aCachedPg = sRevisionCache+iReq.revision+'_'+iReq.page;
-    if (!iData) {
+    if (!_state) {
       fs.stat(aCachedPg, function(err, stats) {
         if (err && err.errno !== process.ENOENT) throw err;
         if (!err) {
@@ -2382,42 +2382,39 @@ console.log(aConflict, aConflict.map);
     that.stmt.readPageRevision.pageRevision.step(function(err, row) {
       if (err) throw err;
       if (row.sideline) {
-        that.handle_readPageRevision(iReq, iData);
+        that.handle_readPageRevision(iReq, _state);
         return;
       }
       if (row.oid === iReq.revision) {
         that.stmt.readPageRevision.pageRevision.reset();
         aCompleteCache(0);
         function aCompleteCache(idx) {
-          for (; idx < iData.layout.length && (!iData.layout[idx].oid || iData.revparts[iData.layout[idx].oid]); ++idx)
-            if (iData.layout[idx].oid)
-              iData.layout[idx].oid = iReq.revision+'_'+iData.layout[idx].oid;
-          if (idx < iData.layout.length) {
-            var aOrig = getPath(iData.layout[idx].oid);
-            iData.layout[idx].oid = iReq.revision+'_'+iData.layout[idx].oid;
-            dupFile(aOrig, sRevisionCache+iData.layout[idx].oid, function(err) {
+          for (; idx < _state.layout.length && (!_state.layout[idx].oid || _state.revparts[_state.layout[idx].oid]); ++idx)
+            if (_state.layout[idx].oid)
+              _state.layout[idx].oid = iReq.revision+'_'+_state.layout[idx].oid;
+          if (idx < _state.layout.length) {
+            var aOrig = getPath(_state.layout[idx].oid);
+            _state.layout[idx].oid = iReq.revision+'_'+_state.layout[idx].oid;
+            dupFile(aOrig, sRevisionCache+_state.layout[idx].oid, function(err) {
               if (err && err.errno !== process.ENOENT) throw err;
               aCompleteCache(++idx);
             });
             return;
           }
-          delete iData.revparts;
-          iData.oid = iReq.page;
-          iData.revision = iReq.revision;
-          fs.writeFile(aCachedPg, JSON.stringify(iData), 'utf8', function(fileErr) {
+          delete _state.revparts;
+          _state.oid = iReq.page;
+          _state.revision = iReq.revision;
+          fs.writeFile(aCachedPg, JSON.stringify(_state), 'utf8', function(fileErr) {
             if (fileErr) throw fileErr;
-            sClients.respond(iReq, iData, 'sequence');
-            that._sendParts(iData.layout, 0, iReq);
+            sClients.respond(iReq, _state, 'sequence');
+            that._sendParts(_state.layout, 0, iReq);
           });
         }
         return;
       }
       var aMap = JSON.parse(row.map);
-      for (var aPg in aMap.page)
-        if (aPg === iReq.page)
-          break;
-      if (aPg !== iReq.page) {
-        that.handle_readPageRevision(iReq, iData);
+      if (!(iReq.page in aMap.page)) {
+        that.handle_readPageRevision(iReq, _state);
         return;
       }
       that.stmt.readPageRevision.getDiff.bind(1, row.oid);
@@ -2426,7 +2423,7 @@ console.log(aConflict, aConflict.map);
         that.stmt.readPageRevision.getDiff.step(function(err, row) {
           if (err) throw err;
           that.stmt.readPageRevision.getDiff.reset();
-          that.unpatch(iData, JSON.parse(row.data));
+          that.unpatch(_state, JSON.parse(row.data));
           aPtFn();
         });
       } else {
@@ -2434,7 +2431,7 @@ console.log(aConflict, aConflict.map);
       }
       function aPtFn() {
         for (var aPt in aMap.page[iReq.page].part) {
-          iData.revparts[aPt] = true;
+          _state.revparts[aPt] = true;
           delete aMap.page[iReq.page].part[aPt];
           that.stmt.readPageRevision.getDiff.bind(2, aPt);
           that.stmt.readPageRevision.getDiff.step(function(err, row) {
@@ -2449,11 +2446,8 @@ console.log(aConflict, aConflict.map);
               return;
             }
             fs.stat(aRevCopy, function(statErr, stats) {
-              var aC = child.spawn('xdelta3', ['-d', '-c', '-s', statErr ? getPath(aPt) : aRevCopy]);
-              aC.stdin.end(row.data);
-              sys.pump(aC.stdout, fs.createWriteStream(aRevCopy+'.temp'), noOpCallback);
-              aC.on('exit', function(code) {
-                if (code) throw 'xdelta3 exit with code '+code;
+              xdPatch(statErr ? getPath(aPt) : aRevCopy, row.data, aRevCopy+'.temp', function(err) {
+                if (err) throw err;
                 fs.rename(aRevCopy+'.temp', aRevCopy, function(err) {
                   if (err) throw err;
                   aPtFn();
@@ -2463,7 +2457,7 @@ console.log(aConflict, aConflict.map);
           });
           return;
         }
-        that.handle_readPageRevision(iReq, iData);
+        that.handle_readPageRevision(iReq, _state);
       }
     });
   };
