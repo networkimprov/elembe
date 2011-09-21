@@ -1805,9 +1805,7 @@ console.log(partlist);
       row.parents = JSON.parse(row.parents);
       if (aOidCounter === _state.ancestors[row.author]) {
         _state.ancestors[row.author] = row.parents[row.author];
-        if (row.sideline)
-          row.sidelinedParent = row.sideline;
-        row.sideline = !row.sideline;
+        row.isParent = true;
       }
       aLogConflict(iRevision, row, 'chain');
       if (!(row.author in row.parents) || aOidCounter === iRevision.parents[row.author]) {
@@ -1830,7 +1828,7 @@ console.log(partlist);
             _state.chain[aP][alt.oid] = alt;
           }
         }
-        if (!alt.sideline || !chain && main.joined > alt.joined) {
+        if (!alt.sideline && !alt.isParent || alt.sideline && alt.isParent || !chain && main.joined > alt.joined) {
           if (alt.map.touch && main.map.touch)
             return aRecur(true);
           for (var aPg in main.map.page) {
@@ -1846,7 +1844,7 @@ console.log(partlist);
         return aRecur(false);
         function aRecur(hasConflict) {
           if (hasConflict) {
-            if (!alt.sideline) {
+            if (!alt.sideline || alt.isParent) {
               for (var a=0; a < _state.conflict.length && alt.rowid < _state.conflict[a].rowid; ++a) {}
               _state.conflict.splice(a, 0, alt);
               alt.sideline = true;
@@ -1854,7 +1852,7 @@ console.log(partlist);
             if (!chain && main.joined > alt.joined)
               alt.joined = main.joined;
           }
-          if (!_state.chain[alt.oid])
+          if (alt.isParent || !_state.chain[alt.oid])
             return;
           if (!chain)
             for (var a in _state.chain[alt.oid])
@@ -1869,7 +1867,7 @@ console.log(partlist);
         return iCallback(null, {});
       var aSidelinedCurr = _state.conflict[0].oid === ' ';
       for (var a=_state.conflict.length-1; a >= +aSidelinedCurr; --a)
-        if (_state.conflict[a].sidelinedParent || _state.conflict[a].joined < _state.authorJoined)
+        if (_state.conflict[a].isParent || _state.conflict[a].joined < _state.authorJoined)
           return iCallback(_state.conflict[a].oid);
       dbResults(that.stmt.checkConflict.state, 'state', function(states) {
         var aRevN = 0;
