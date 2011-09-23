@@ -2348,7 +2348,7 @@ console.log(aConflict, aConflict.map);
     if (!that.stmt.readPageRevision) {
       that.stmt.readPageRevision = {
         getPage: "SELECT data, layout FROM page WHERE oid = ?",
-        pageRevision: "SELECT oid, map, sideline FROM revision WHERE oid != ' ' ORDER BY ROWID DESC",
+        pageRevision: "SELECT oid, map, sideline, author, parents FROM revision WHERE oid != ' ' ORDER BY ROWID DESC",
         getDiff: "SELECT data FROM diff WHERE revision = ? AND object = ?"
       };
       dbPrepare(that.db, that.stmt.readPageRevision, function(err) {
@@ -2379,59 +2379,76 @@ console.log(aConflict, aConflict.map);
       });
       return;
     }
+    if (_state.sidelined) {
+      for (var any in _state.parents) break;
+      if (!any) {
+        fNext();
+        function fNext() {
+          if (_state.sidelined.length)
+            fPatch('sideline', _state.sidelined.pop(), fNext);
+          else
+            fCompleteCache(0);
+        }
+        return;
+      }
+    }
     that.stmt.readPageRevision.pageRevision.step(function(err, row) {
       if (err) throw err;
+      if (row.oid === iReq.revision) {
+        if (row.sideline) {
+          _state.sidelined = [ row ];
+          _state.parents = JSON.parse(row.parents);
+          _state.ancestors = JSON.parse(row.parents);
+          that.handle_readPageRevision(iReq, _state);
+        } else {
+          fCompleteCache(0);
+        }
+        return;
+      }
+      if (_state.sidelined) {
+        row.parents = JSON.parse(row.parents);
+        var aOidCount = +row.oid.slice(row.oid.indexOf('.')+1);
+        if (aOidCount === _state.ancestors[row.author]) {
+          _state.ancestors[row.author] = row.parents[row.author];
+          if (row.sideline)
+            _state.sidelined.push(row);
+          if (aOidCount === _state.parents[row.author])
+            delete _state.parents[row.author];
+          that.handle_readPageRevision(iReq, _state);
+          return;
+        }
+        if (!(row.author in row.parents))
+          delete _state.parents[row.author];
+      }
       if (row.sideline) {
         that.handle_readPageRevision(iReq, _state);
         return;
       }
-      if (row.oid === iReq.revision) {
-        that.stmt.readPageRevision.pageRevision.reset();
-        aCompleteCache(0);
-        function aCompleteCache(idx) {
-          for (; idx < _state.layout.length && (!_state.layout[idx].oid || _state.revparts[_state.layout[idx].oid]); ++idx)
-            if (_state.layout[idx].oid)
-              _state.layout[idx].oid = iReq.revision+'_'+_state.layout[idx].oid;
-          if (idx < _state.layout.length) {
-            var aOrig = getPath(_state.layout[idx].oid);
-            _state.layout[idx].oid = iReq.revision+'_'+_state.layout[idx].oid;
-            dupFile(aOrig, sRevisionCache+_state.layout[idx].oid, function(err) {
-              if (err && err.errno !== process.ENOENT) throw err;
-              aCompleteCache(++idx);
-            });
-            return;
-          }
-          delete _state.revparts;
-          _state.oid = iReq.page;
-          _state.revision = iReq.revision;
-          fs.writeFile(aCachedPg, JSON.stringify(_state), 'utf8', function(fileErr) {
-            if (fileErr) throw fileErr;
-            sClients.respond(iReq, _state, 'sequence');
-            that._sendParts(_state.layout, 0, iReq);
-          });
-        }
-        return;
-      }
-      var aMap = JSON.parse(row.map);
-      if (!(iReq.page in aMap.page)) {
+      fPatch(null, row, function() {
         that.handle_readPageRevision(iReq, _state);
-        return;
-      }
+      });
+    });
+
+    function fPatch(isSideline, row, callback) {
+      var aMap = JSON.parse(row.map);
+      if (!(iReq.page in aMap.page))
+        return callback();
       that.stmt.readPageRevision.getDiff.bind(1, row.oid);
       if (aMap.page[iReq.page].op !== '.') {
         that.stmt.readPageRevision.getDiff.bind(2, iReq.page);
-        that.stmt.readPageRevision.getDiff.step(function(err, row) {
+        that.stmt.readPageRevision.getDiff.step(function(err, diff) {
           if (err) throw err;
           that.stmt.readPageRevision.getDiff.reset();
-          that.unpatch(_state, JSON.parse(row.data));
-          aPtFn();
+          that[isSideline ? 'patch' : 'unpatch'](_state, JSON.parse(diff.data));
+          fPtFn();
         });
       } else {
-        aPtFn();
+        fPtFn();
       }
-      function aPtFn() {
+      function fPtFn() {
         for (var aPt in aMap.page[iReq.page].part) {
           _state.revparts[aPt] = true;
+          var aNewPart = aMap.page[iReq.page].part[aPt].op === '+';
           delete aMap.page[iReq.page].part[aPt];
           that.stmt.readPageRevision.getDiff.bind(2, aPt);
           that.stmt.readPageRevision.getDiff.step(function(err, row) {
@@ -2441,25 +2458,48 @@ console.log(aConflict, aConflict.map);
             if (!row.data) {
               fs.unlink(aRevCopy, function(err) {
                 if (err && err.errno !== process.ENOENT) throw err;
-                aPtFn();
+                fPtFn();
               });
               return;
             }
             fs.stat(aRevCopy, function(statErr, stats) {
-              xdPatch(statErr ? getPath(aPt) : aRevCopy, row.data, aRevCopy+'.temp', function(err) {
+              var aSrc = !statErr ? aRevCopy : isSideline && aNewPart ? null : getPath(aPt);
+              xdPatch(aSrc, row.data, aRevCopy+'.temp', function(err) {
                 if (err) throw err;
                 fs.rename(aRevCopy+'.temp', aRevCopy, function(err) {
                   if (err) throw err;
-                  aPtFn();
+                  fPtFn();
                 });
               });
             });
           });
           return;
         }
-        that.handle_readPageRevision(iReq, _state);
+        callback();
       }
-    });
+    }
+
+    function fCompleteCache(idx) {
+      for (; idx < _state.layout.length && (!_state.layout[idx].oid || _state.revparts[_state.layout[idx].oid]); ++idx)
+        if (_state.layout[idx].oid)
+          _state.layout[idx].oid = iReq.revision+'_'+_state.layout[idx].oid;
+      if (idx < _state.layout.length) {
+        var aOrig = getPath(_state.layout[idx].oid);
+        _state.layout[idx].oid = iReq.revision+'_'+_state.layout[idx].oid;
+        dupFile(aOrig, sRevisionCache+_state.layout[idx].oid, function(err) {
+          if (err && err.errno !== process.ENOENT) throw err;
+          fCompleteCache(++idx);
+        });
+        return;
+      }
+      that.stmt.readPageRevision.pageRevision.reset();
+      var aResponse = { oid:iReq.page, revision:iReq.revision, data:_state.data, layout:_state.layout };
+      fs.writeFile(aCachedPg, JSON.stringify(aResponse), 'utf8', function(fileErr) {
+        if (fileErr) throw fileErr;
+        sClients.respond(iReq, aResponse, 'sequence');
+        that._sendParts(_state.layout, 0, iReq);
+      });
+    }
   };
 
   Project.prototype.unpatch = function(iOrig, iDiff) {

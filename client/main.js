@@ -633,7 +633,6 @@ suae.pMgr = {
 
     for (var aPg in iRev.map.page) {
       var aClik = "suae.pMgr.markRevision(this.parentNode); suae.pMgr.goRev('"+ aPg +"','"+ iRev.oid +"'); return false;";
-      if (iRev.sideline) aClik = "alert('not yet implemented'); return false;";  //. temporary
       aHtml += '<div><a href="suae:'+ iRev.oid +'" onclick="'+ aClik +'">'+ iProj.pageindex.find('name', aPg).text
         +'</a> @ '+ iRev.map.page[aPg].touch;
 
