@@ -1808,7 +1808,7 @@ console.log(partlist);
         row.isParent = true;
       }
       aLogConflict(iRevision, row, 'chain');
-      if (!(row.author in row.parents) || aOidCounter === iRevision.parents[row.author]) {
+      if (iRevision.parents[row.author] === 0 && !(row.author in row.parents) || aOidCounter === iRevision.parents[row.author]) {
         _state.parents[row.author] = iRevision.parents[row.author];
         delete iRevision.parents[row.author];
         for (var any in iRevision.parents) break;
