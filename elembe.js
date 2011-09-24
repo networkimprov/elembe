@@ -1792,12 +1792,12 @@ console.log(partlist);
       return;
     }
     that.stmt.checkConflict.revision.step(function(err, row) {
-      if (err) throw err;console.log( iRevision.parents);
+      if (err) throw err;
       if (!row) throw new Error('parent not found');
       if (typeof _state === 'string') {
         _state = { conflict:[], chain:{}, parents:{}, ancestors:{}, authorJoined:_state };
         for (var a in iRevision.parents)
-          _state.ancestors[a] = iRevision.parents[a];
+          _state.parents[a] = _state.ancestors[a] = iRevision.parents[a];
         aLogConflict(iRevision, { rowid:row.rowid+1, oid:' ', map:that.revisionMap, parents:that.parentMap, author:sUUId, joined:'3333' }, 'chain');
       }
       var aOidCounter = +row.oid.slice(row.oid.indexOf('.')+1);
@@ -1808,14 +1808,10 @@ console.log(partlist);
         row.isParent = true;
       }
       aLogConflict(iRevision, row, 'chain');
-      if (iRevision.parents[row.author] === 0 && !(row.author in row.parents) || aOidCounter === iRevision.parents[row.author]) {
-        _state.parents[row.author] = iRevision.parents[row.author];
-        delete iRevision.parents[row.author];
-        for (var any in iRevision.parents) break;
-        if (!any)
-          iRevision.parents = _state.parents;
-      }
-      if (iRevision.parents !== _state.parents)
+      if (iRevision.parents[row.author] === 0 && !(row.author in row.parents) || aOidCounter === iRevision.parents[row.author])
+        delete _state.parents[row.author];
+      for (var any in _state.parents) break;
+      if (any)
         return that.checkConflict(iRevision, oNotify, iCallback, _state);
       function aLogConflict(main, alt, chain) {
         if (chain) {
@@ -1883,7 +1879,6 @@ console.log(partlist);
           }
           var aConflict = _state.conflict[aRevN];
           var aObject;
-console.log(aConflict, aConflict.map);
           for (var aPg in aConflict.map.page) {
             for (var aPt in aConflict.map.page[aPg].part) break;
             aObject = aPt || aConflict.map.page[aPg].op !== '.' && aPg;
@@ -1911,7 +1906,6 @@ console.log(aConflict, aConflict.map);
               aModList.proj[aObject] = null;
           }
           if (aObject) {
-  console.log(aObject);
             that.stmt.checkConflict.diff.bind(1, aConflict.oid);
             that.stmt.checkConflict.diff.bind(2, aObject);
             that.stmt.checkConflict.diff.step(function(err, diffRow) {
