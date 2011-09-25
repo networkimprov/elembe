@@ -1774,7 +1774,8 @@ console.log(partlist);
         setpage: "UPDATE page SET data = ?2, layout = ?3 WHERE oid = ?1",
         setproj: "UPDATE projects.project SET data = ?2 WHERE oid = ?1",
         setstate: "UPDATE clientstate SET state = ?2 WHERE client = ?1",
-        setrev: "UPDATE revision SET sideline = ?2 WHERE oid = ?1"
+        setrev: "UPDATE revision SET sideline = ?2 WHERE oid = ?1",
+        parent: "SELECT oid FROM revision WHERE sideline IS NULL AND author = ?"
       };
       dbPrepare(that.db, that.stmt.checkConflict, function(err) {
         if (err) throw err;
@@ -1977,29 +1978,43 @@ console.log(partlist);
           that.stmt.checkConflict.setrev.step(function(err, row) {
             if (err) throw err;
             that.stmt.checkConflict.setrev.reset();
-            if (that.parentMap[aConflict.author] === aConflict.oid.slice(aConflict.oid.indexOf('.')+1))
-              that.parentMap[aConflict.author] = aConflict.parents[aConflict.author];
-            oNotify.push({type:'revisionsideline', oid:aConflict.oid});
-            if (++aRevN < _state.conflict.length)
-              aSideline();
-            else
-              aSaveState();
-            function aSaveState() {
-              for (var a=0; a < states.length; ++a) {
-                if (!states[a]._update)
-                  continue;
-                delete states[a]._update;
-                that.stmt.checkConflict.setstate.bind(1, states[a].client);
-                that.stmt.checkConflict.setstate.bind(2, JSON.stringify(states[a].state));
-                that.stmt.checkConflict.setstate.step(function(err, row) {
-                  if (err) throw err;
-                  that.stmt.checkConflict.setstate.reset();
-                  aSaveState();
-                });
-                //. notify subscribers whose state changed
-                return;
+            if (that.parentMap[aConflict.author] === +aConflict.oid.slice(aConflict.oid.indexOf('.')+1)) {
+              that.stmt.checkConflict.parent.bind(1, aConflict.author);
+              that.stmt.checkConflict.parent.step(function(err, row) {
+                if (err) throw err;
+                that.stmt.checkConflict.parent.reset();
+                if (row)
+                  that.parentMap[aConflict.author] = +row.oid.slice(row.oid.indexOf('.')+1);
+                else
+                  delete that.parentMap[aConflict.author];
+                fNext();
+              });
+            } else {
+              fNext();
+            }
+            function fNext() {
+              oNotify.push({type:'revisionsideline', oid:aConflict.oid});
+              if (++aRevN < _state.conflict.length)
+                aSideline();
+              else
+                aSaveState();
+              function aSaveState() {
+                for (var a=0; a < states.length; ++a) {
+                  if (!states[a]._update)
+                    continue;
+                  delete states[a]._update;
+                  that.stmt.checkConflict.setstate.bind(1, states[a].client);
+                  that.stmt.checkConflict.setstate.bind(2, JSON.stringify(states[a].state));
+                  that.stmt.checkConflict.setstate.step(function(err, row) {
+                    if (err) throw err;
+                    that.stmt.checkConflict.setstate.reset();
+                    aSaveState();
+                  });
+                  //. notify subscribers whose state changed
+                  return;
+                }
+                iCallback(null, aModList.part);
               }
-              iCallback(null, aModList.part);
             }
           });
         }
