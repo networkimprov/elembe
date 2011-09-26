@@ -1515,7 +1515,7 @@ function Project(iRecord, iCallback) {
         if (aMa.invite === 'invalid')
           aSql = "INSERT OR REPLACE INTO member VALUES (NULL, '"+aMa.alias+"', 'invalid', 'invalid')";
         else if (!aRow || (!aRow.uid && aMa.uid))
-          aSql = "INSERT OR REPLACE INTO member VALUES ("+aUidstr+",'"+aMa.alias+"','"+(new Date).toISOString()+"', NULL)";
+          aSql = "INSERT OR REPLACE INTO member VALUES ("+aUidstr+",'"+aMa.alias+"',"+(aMa.joined ? "'"+aMa.joined+"'" : "NULL")+", NULL)";
         else if (aRow.uid && aMa.alias)
           aSql = "UPDATE member SET alias = '"+aMa.alias+"' WHERE uid = "+aUidstr;
         else if (aRow.uid && aMa.resign)
@@ -1554,7 +1554,8 @@ function Project(iRecord, iCallback) {
           sClients.respond(iReq, {});
           return; //. log error
         }
-        sServices.listEdit(that.service, that.oid, 'add', iReq.from, {type:'memberAlias', project:that.oid, uid:iReq.from, alias:iReq.jso.alias}, null, function() {
+        var aMsgToAll = { type:'memberAlias', project:that.oid, uid:iReq.from, alias:iReq.jso.alias, joined:(new Date).toISOString() };
+        sServices.listEdit(that.service, that.oid, 'add', iReq.from, aMsgToAll, null, function() {
           sClients.respond(iReq, {});
         });
       });
