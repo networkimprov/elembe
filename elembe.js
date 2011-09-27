@@ -160,6 +160,11 @@ function dbResults(iStmt, iOptionalParseColumns, iCallback) {
   iStmt.step(aStepCall);
 }
 
+function dbBind(iStmt, iArgument) {
+  for (var a=1; a < arguments.length; ++a)
+    iStmt.bind(a, arguments[a]);
+}
+
 function createSchema(iSchema, iFile) {
   var aSql = '';
   for (var aDb in iSchema)
