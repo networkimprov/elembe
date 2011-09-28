@@ -160,9 +160,9 @@ function dbResults(iStmt, iOptionalParseColumns, iCallback) {
   iStmt.step(aStepCall);
 }
 
-function dbBind(iStmt, iArgument) {
-  for (var a=1; a < arguments.length; ++a)
-    iStmt.bind(a, arguments[a]);
+sqlite.Statement.prototype.bindN = function(iArgument) {
+  for (var a=0; a < arguments.length; ++a)
+    this.bind(a+1, arguments[a]);
 }
 
 function createSchema(iSchema, iFile) {
@@ -1506,56 +1506,84 @@ function Project(iRecord, iCallback) {
   Project.prototype.projectImport = { autogen:true, from:true, jso:true, data:true };
   Project.prototype.handle_projectImport = function(iReq) {
     var that = this;
+    if (!that.stmt.svcMsg) {
+      that.stmt.svcMsg = {
+        member_find: "SELECT uid FROM member WHERE uid = ? OR alias = ?",
+        member_insert: "INSERT OR REPLACE INTO member VALUES (?, ?, ?, ?)",
+        member_setAlias: "UPDATE member SET alias = ?2 WHERE uid = ?1",
+        member_setLeft: "UPDATE member SET left = ?2 WHERE uid = ?1",
+        member_select: "SELECT uid, alias, joined, left FROM member WHERE alias = ?",
+        accept_select: "SELECT uid, left FROM member WHERE alias = ?",
+        revision_has: "SELECT (SELECT 1 FROM member WHERE uid = ?) AS hasmem, (SELECT 1 FROM revision WHERE oid = ?) AS hasrev",
+        revision_insert: "INSERT INTO revision VALUES (?, ?, ?, ?, ?, ?)",
+        revision_insertDiff: "INSERT INTO diff VALUES ( ?1, ?3, ?2 )",
+        revision_updateParentMap: "UPDATE revision SET parents = ? WHERE oid = ' '",
+        revision_updateProject: "UPDATE projects.project SET data = ? WHERE oid = '"+that.oid+"'",
+        revision_selectPage: "SELECT data, layout FROM page WHERE oid = ?",
+        revision_insertPage: "INSERT OR REPLACE INTO page VALUES (?, ?, ?, ?, ?)"
+      };
+      dbPrepare(that.db, that.stmt.svcMsg, function(err) {
+        if (err) throw err;
+        that.handle_projectImport(iReq);
+      });
+      return;
+    }
     switch(iReq.jso.type) {
 
     case 'memberAlias':
-      var aMa = iReq.jso;
-      aUidstr = aMa.uid ? "'"+aMa.uid+"'" : 'NULL';
-      var aRow;
-      dbExec(that.db, "SELECT uid FROM member WHERE uid = "+aUidstr+" OR alias = '"+aMa.alias+"'", function(err, row) {
+      that.stmt.svcMsg.member_find.bindN(iReq.jso.uid || null, iReq.jso.alias);
+      that.stmt.svcMsg.member_find.step(function(err, row) {
         if (err) throw err;
-        if (row) aRow = row;
-      }, function() {
-        var aSql;
-        if (aMa.invite === 'invalid')
-          aSql = "INSERT OR REPLACE INTO member VALUES (NULL, '"+aMa.alias+"', 'invalid', 'invalid')";
-        else if (!aRow || (!aRow.uid && aMa.uid))
-          aSql = "INSERT OR REPLACE INTO member VALUES ("+aUidstr+",'"+aMa.alias+"',"+(aMa.joined ? "'"+aMa.joined+"'" : "NULL")+", NULL)";
-        else if (aRow.uid && aMa.alias)
-          aSql = "UPDATE member SET alias = '"+aMa.alias+"' WHERE uid = "+aUidstr;
-        else if (aRow.uid && aMa.resign)
-          aSql = "UPDATE member SET left = '"+(new Date).toISOString()+"' WHERE alias = '"+aMa.alias+"'";
-        else
-          return aCircInvite();
-        aSql += ";SELECT uid, alias, joined, left FROM member WHERE alias = '"+aMa.alias+"';";
-        var aNotify;
-        dbExec(that.db, aSql, function(err, row) {
+        that.stmt.svcMsg.member_find.reset();
+        if (iReq.jso.invite === 'invalid') {
+          that.stmt.svcMsg.member_insert.bindN(null, iReq.jso.alias, 'invalid', 'invalid');
+          that.stmt.svcMsg.member_insert.step(fStep);
+        } else if (!row || (!row.uid && iReq.jso.uid)) {
+          that.stmt.svcMsg.member_insert.bindN(iReq.jso.uid || null, iReq.jso.alias, iReq.jso.joined || null, null);
+          that.stmt.svcMsg.member_insert.step(fStep);
+        } else if (row.uid && iReq.jso.alias) {
+          that.stmt.svcMsg.member_setAlias.bindN(iReq.jso.uid, iReq.jso.alias);
+          that.stmt.svcMsg.member_setAlias.step(fStep);
+        } else if (row.uid && iReq.jso.resign) {
+          that.stmt.svcMsg.member_setLeft.bindN(iReq.jso.uid, (new Date).toISOString());
+          that.stmt.svcMsg.member_setLeft.step(fStep);
+        } else
+          fCircInvite();
+        function fStep(err) {
           if (err) throw err;
-          if (row) {
-            row.type = aMa.uid === sUUId ? 'setuseralias' : 'memberalias';
-            aNotify = function() { sClients.notify(iReq, row, that.oid) };
-          }
-        }, aCircInvite);
-        function aCircInvite() {
-          if (!aNotify) aNotify = function() { sClients.respond(iReq, {}) };
-          if (aMa.invite && aMa.invite !== 'invalid')
-            sServices.listPost(that.service, that.oid, { type:'memberAlias', project:that.oid, alias:aMa.alias }, null, aNotify);
-          else if (iReq.from === sUUId && aMa.uid && aMa.uid !== sUUId)
-            that.sendProject(aMa.uid, aNotify);
+          this.reset();
+          that.stmt.svcMsg.member_select.bind(1, iReq.jso.alias);
+          that.stmt.svcMsg.member_select.step(function(err, row) {
+            if (err) throw err;
+            that.stmt.svcMsg.member_select.reset();
+            row.type = iReq.jso.uid === sUUId ? 'setuseralias' : 'memberalias';
+            fCircInvite(row);
+          });
+        }
+        function fCircInvite(notify) {
+          if (iReq.jso.invite && iReq.jso.invite !== 'invalid')
+            sServices.listPost(that.service, that.oid, { type:'memberAlias', project:that.oid, alias:iReq.jso.alias }, null, fRespond);
+          else if (iReq.from === sUUId && iReq.jso.uid && iReq.jso.uid !== sUUId)
+            that.sendProject(iReq.jso.uid, fRespond);
           else
-            aNotify();
+            fRespond();
+          function fRespond() {
+            if (notify)
+              sClients.notify(iReq, notify, that.oid);
+            else
+              sClients.respond(iReq, {});
+          }
         }
       });
       return;
 
     case 'acceptInvite':
-      var aMember;
-      dbExec(that.db, "SELECT uid, left FROM member WHERE alias = '"+iReq.jso.alias+"'", function(err, row) {
+      that.stmt.svcMsg.accept_select.bind(1, iReq.jso.alias);
+      that.stmt.svcMsg.accept_select.step(function(err, row) {
         if (err) throw err;
-        if (row) aMember = row;
-      }, function() {
-        if (!aMember || aMember.left || aMember.uid && aMember.uid !== iReq.jso.uid) {
-          console.log('got acceptInvite for invalid member: '+sys.inspect(aMember))
+        that.stmt.svcMsg.accept_select.reset();
+        if (!row || row.left || row.uid && row.uid !== iReq.jso.uid) {
+          console.log('got acceptInvite for invalid member: '+sys.inspect(row))
           sClients.respond(iReq, {});
           return; //. log error
         }
@@ -1567,100 +1595,99 @@ function Project(iRecord, iCallback) {
       return;
 
     case 'revision':
-      if (!that.stmt.revisionDiff) {
-        var aOk;
-        dbExec(that.db, "SELECT 1 AS hasmem FROM member WHERE uid = '"+iReq.from+"';\
-                         SELECT 1 AS hasrev FROM revision WHERE oid = '"+iReq.jso.oid+"';", function(err, row) {
-          if (err) throw err;
-          if (row) aOk = row.hasmem ? true : false;
-        }, function() {
-          if (!aOk) {
-            sClients.respond(iReq, {});
-            console.log('skip rev '+iReq.jso.oid+' from '+iReq.from);
-            return;
-          }
-          that.db.prepare("INSERT INTO diff VALUES ( ?, '"+iReq.jso.oid+"', ? )", function(err, stmt) {
-            if (err) throw err;
-            that.stmt.revisionDiff = stmt;
-            that.handle_projectImport(iReq);
+      var aNotify;
+      that.stmt.svcMsg.revision_has.bindN(iReq.from, iReq.jso.oid);
+      that.stmt.svcMsg.revision_has.step(function(err, row) {
+        if (err) throw err;
+        that.stmt.svcMsg.revision_has.reset();
+console.log(row);
+        if (!row.hasmem || row.hasrev) {
+          sClients.respond(iReq, {});
+          console.log('skip rev '+iReq.jso.oid+' from '+iReq.from);
+          return;
+        }
+        dbExec(that.db, "BEGIN TRANSACTION", noOpCallback, function() {
+          aNotify = [ iReq.jso ];
+          for (var a in that.parentMap)
+            if (!(a in iReq.jso.parents))
+              iReq.jso.parents[a] = 0;
+          that.checkConflict(iReq.jso, aNotify, function(sideline, partlist) {
+console.log(partlist);
+            iReq.jso.sideline = sideline;
+            if (partlist)
+              iReq.jso.map.page.sideline = {part:partlist};
+            that.stmt.svcMsg.revision_insert.bindN((sideline ? '' : '!')+iReq.jso.oid, iReq.jso.author, iReq.jso.date,
+                                                   JSON.stringify(iReq.jso.map), JSON.stringify(iReq.jso.parents), sideline || null);
+            that.stmt.svcMsg.revision_insert.step(function(err, row) {
+              if (err) throw err;
+              that.stmt.svcMsg.revision_insert.reset();
+              that.stmt.svcMsg.revision_insertDiff.bind(3, iReq.jso.oid);
+              if (sideline)
+                return fIter();
+              that.parentMap[iReq.jso.author] = +iReq.jso.oid.slice(iReq.jso.oid.indexOf('.')+1);
+              that.stmt.svcMsg.revision_updateParentMap.bind(1, JSON.stringify(that.parentMap));
+              that.stmt.svcMsg.revision_updateParentMap.step(function(err, row) {
+                if (err) throw err;
+                that.stmt.svcMsg.revision_updateParentMap.reset();
+                fIter();
+              });
+            });
           });
         });
-        return;
-      }
-      var aNotify = [];
-      dbExec(that.db, "BEGIN TRANSACTION", noOpCallback, function() {
-        aNotify.push(iReq.jso);
-        for (var a in that.parentMap)
-          if (!(a in iReq.jso.parents))
-            iReq.jso.parents[a] = 0;
-        that.checkConflict(iReq.jso, aNotify, function(sideline, partlist) {
-console.log(partlist);
-          iReq.jso.sideline = sideline;
-          if (partlist)
-            iReq.jso.map.page.sideline = {part:partlist};
-          if (!sideline)
-            that.parentMap[iReq.jso.author] = +iReq.jso.oid.slice(iReq.jso.oid.indexOf('.')+1);
-          dbExec(that.db, "INSERT INTO revision VALUES (\
-                            '"+(sideline ? '' : '!')+iReq.jso.oid+"', \
-                            '"+iReq.jso.author+"', \
-                            '"+iReq.jso.date+"', \
-                            '"+JSON.stringify(iReq.jso.map)+"', \
-                            '"+JSON.stringify(iReq.jso.parents)+"', \
-                            "+(sideline ? "'"+sideline+"'" : "NULL")+"); \
-                          "+(sideline ? "" : "UPDATE revision SET parents = '"+JSON.stringify(that.parentMap)+"' WHERE oid = ' ';"), noOpCallback, aIter);
-        });
       });
-      function aIter(iterN, iterO) {
+      function fIter(iterN, iterO) {
         if (!iterN) iterN = iterO = 0;
         if (iterN < iReq.jso.list.length) {
           var aStart = iterO;
           iterO += iReq.jso.list[iterN].size;
           var aDiff = iReq.jso.list[iterN].type === 'part' ? iReq.data.slice(aStart, iterO) : iReq.data.toString('ascii', aStart, iterO);
           if (iReq.jso.sideline)
-            return aSetDiff(aDiff);
+            return fSetDiff(aDiff);
           switch(iReq.jso.list[iterN].type) {
           case 'proj':
             var aData = JSON.parse(aDiff).add;
-            dbExec(that.db, "UPDATE projects.project SET data = '"+JSON.stringify(aData)+"' WHERE oid = '"+that.oid+"';", noOpCallback, function() {
+            that.stmt.svcMsg.revision_updateProject.bind(1, JSON.stringify(aData));
+            that.stmt.svcMsg.revision_updateProject.step(function(err, row) {
+              if (err) throw err;
+              that.stmt.svcMsg.revision_updateProject.reset();
               sClients.notify(null, {type:'projectdata', oid:that.oid, data:aData});
-              aSetDiff(aDiff);
+              fSetDiff(aDiff);
             });
             break;
           case 'page':
-            var aOrig;
-            dbExec(that.db, "SELECT data, layout FROM page WHERE oid = '"+iReq.jso.list[iterN].oid+"'", function(err, row) {
+            that.stmt.svcMsg.revision_selectPage.bind(1, iReq.jso.list[iterN].oid);
+            that.stmt.svcMsg.revision_selectPage.step(function(err, row) {
               if (err) throw err;
-              if (row) {
-                aOrig = row;
-                aOrig.data = JSON.parse(aOrig.data);
-                aOrig.layout = JSON.parse(aOrig.layout);
-              }
-            }, function() {
-              if (!aOrig) aOrig = { data:{}, layout:[] };
-              that.patch(aOrig, JSON.parse(aDiff));
-              dbExec(that.db, "INSERT OR REPLACE INTO page VALUES \
-                               ( '"+iReq.jso.list[iterN].oid+"', '"+JSON.stringify(aOrig.data)+"', NULL, '"+JSON.stringify(aOrig.layout)+"', NULL )", noOpCallback, function() {
-                aNotify.push({type:'page', oid:iReq.jso.list[iterN].oid, data:aOrig.data});
-                aSetDiff(aDiff);
+              that.stmt.svcMsg.revision_selectPage.reset();
+              var aPage = row || {};
+              aPage.data = JSON.parse(aPage.data || '{}');
+              aPage.layout = JSON.parse(aPage.layout || '[]');
+              that.patch(aPage, JSON.parse(aDiff));
+              that.stmt.svcMsg.revision_insertPage.bindN(iReq.jso.list[iterN].oid, JSON.stringify(aPage.data), null, JSON.stringify(aPage.layout), null);
+              that.stmt.svcMsg.revision_insertPage.step(function(err, row) {
+                if (err) throw err;
+                that.stmt.svcMsg.revision_insertPage.reset();
+                aNotify.push({type:'page', oid:iReq.jso.list[iterN].oid, data:aPage.data});
+                fSetDiff(aDiff);
               });
             });
             break;
           case 'part':
             var aPath = iReq.jso.map.page.sideline.part[iReq.jso.list[iterN].oid] || makePath(iReq.jso.list[iterN].oid);
             if (iReq.jso.map.page.sideline.part[iReq.jso.list[iterN].oid])
-              aApplyDiff(false);
+              fApplyDiff(false);
             else
-              fs.stat(aPath, aApplyDiff);
-            function aApplyDiff(noPath) {
+              fs.stat(aPath, fApplyDiff);
+            function fApplyDiff(noPath) {
               xdPatch(!noPath && aPath, aDiff, aPath+'.temp', function(err) {
                 if (err) throw err;
                 fs.rename(aPath+'.temp', iReq.jso.map.page.sideline.part[iReq.jso.list[iterN].oid] || aPath+'.new', function(err) {
                   if (err) throw err;
                   if (noPath)
-                    return aSetDiff(null);
+                    return fSetDiff(null);
                   xdDiff(iReq.jso.map.page.sideline.part[iReq.jso.list[iterN].oid] || aPath+'.new', aPath, function(err, diff) {
                     if (err) throw err;
-                    aSetDiff(diff);
+                    fSetDiff(diff);
                   });
                 });
               });
@@ -1669,25 +1696,22 @@ console.log(partlist);
           default:
             throw new Error('revision has unsupported type '+iReq.jso.list[iterN].type);
           }
-          function aSetDiff(diff) {
-            that.stmt.revisionDiff.bind(1, iReq.jso.list[iterN].oid);
-            that.stmt.revisionDiff.bind(2, diff);
-            that.stmt.revisionDiff.step(function(err, row) {
+          function fSetDiff(diff) {
+            that.stmt.svcMsg.revision_insertDiff.bindN(iReq.jso.list[iterN].oid, diff);
+            that.stmt.svcMsg.revision_insertDiff.step(function(err, row) {
               if (err) throw err;
-              that.stmt.revisionDiff.reset();
-              aIter(++iterN, iterO);
+              that.stmt.svcMsg.revision_insertDiff.reset();
+              fIter(++iterN, iterO);
             });
           }
           return;
         }
-        that.stmt.revisionDiff.finalize();
-        delete that.stmt.revisionDiff;
         dbExec(that.db, "COMMIT TRANSACTION", noOpCallback, function() {
           if (!iReq.jso.sideline)
-            that._finishRevision(that.db, iReq.jso.map, null, null, aDone);
+            that._finishRevision(that.db, iReq.jso.map, null, null, fDone);
           else
-            aDone();
-          function aDone() {
+            fDone();
+          function fDone() {
             delete iReq.jso.list;
             sClients.notify(iReq, aNotify, that.oid);
           }
