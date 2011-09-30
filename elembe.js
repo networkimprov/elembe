@@ -157,12 +157,12 @@ function dupFile(iSrc, iDst, iCallback) {
 function storeFile(iPath, iBuf, iCallback) {
   fs.open(iPath, 'w', 0600, function(err, fd) {
     if (err) return iCallback(err);
-    aWrite(iBuf);
-    function aWrite(buf) {
+    fWrite(iBuf);
+    function fWrite(buf) {
       fs.write(fd, buf, 0, buf.length, null, function(err, written) {
         if (err) { fs.close(fd); return iCallback(err); }
         if (written < buf.length)
-          return aWrite(buf.slice(written));
+          return fWrite(buf.slice(written));
         fs.fsync(fd, function(err) {
           fs.close(fd);
           if (err) return iCallback(err);
@@ -342,13 +342,13 @@ function Queue() {
         } else if (data) {
           Project.list[aReq.project] = new Project(data, function() {
             if (data.installed)
-              return aLastReq();
+              return fLastReq();
             fs.readdir(sInbound, function(err, array) {
               if (err) throw err;
               array.sort();
               var aIterDel, aIterN = 0;
-              aIter();
-              function aIter() {
+              fIter();
+              function fIter() {
                 if (aIterDel)
                   fs.unlink(sInbound+aIterDel, noOpCallback);
                 while (aIterN < array.length && array[aIterN].slice(0, array[aIterN].lastIndexOf('_')) !== aReq.project) ++aIterN;
@@ -357,7 +357,7 @@ function Queue() {
                   fs.readFile(sInbound+array[aIterN++], function(err, buffer) {
                     if (err) throw err;
                     var aR = MqClient.unpackMsg(buffer);
-                    aR.callback = aIter;
+                    aR.callback = fIter;
                     aR.data = aR._buf;
                     delete aR._buf;
                     Project.list[aReq.project].queue.post(aR);
@@ -365,14 +365,14 @@ function Queue() {
                   });
                   return;
                 }
-                sProjects.setInstalled(aReq.project, aLastReq);
+                sProjects.setInstalled(aReq.project, fLastReq);
               }
             });
-            function aLastReq() {
-              Project.list[aReq.project].queue.post(aReq);
-              processQueue(aReq.project, true);
-            }
           });
+          function fLastReq() {
+            Project.list[aReq.project].queue.post(aReq);
+            processQueue(aReq.project, true);
+          }
         } else
           sClients.respond(aReq, {error:'Request against invalid Project oid'}, 'noqueue');
         processQueue();
@@ -684,19 +684,19 @@ var sServices = {
         clearTimeout(iRow.timer);
       if (/^error/.test(type))
         console.log('ack failure: '+type);
-      var aCallbacks = 1;
+      fOk.count = 1;
       if (iRow.msgHead.etc && iRow.msgHead.etc.type === 'invite') {
         if (type !== 'ok') {
-          ++aCallbacks;
-          queueRequest({type:'postMsg', client:null, project:iRow.msgHead.etc.oid, msg:'Invited user '+iRow.msgHead.alias+' is unknown', callback:aOk});
+          ++fOk.count;
+          queueRequest({type:'postMsg', client:null, project:iRow.msgHead.etc.oid, msg:'Invited user '+iRow.msgHead.alias+' is unknown', callback:fOk});
         }
-        queueRequest({type:'projectImport', client:null, project:iRow.msgHead.etc.oid, from:sUUId, data:null, callback:aOk,
+        queueRequest({type:'projectImport', client:null, project:iRow.msgHead.etc.oid, from:sUUId, data:null, callback:fOk,
           jso:{type:'memberAlias', alias:iRow.msgHead.alias, invite:type === 'ok' ? 'accept' : 'invalid'}});
-        return;
+      } else {
+        fOk();
       }
-      aOk();
-      function aOk() {
-        if (--aCallbacks > 0)
+      function fOk() {
+        if (--fOk.count > 0)
           return;
         iRow.msgHead = null;
         iRow.queue.shift();
@@ -809,9 +809,9 @@ var sServices = {
     this._queue(iHost, aHead, iMsg, iCallback);
   };
 
-  sServices.listPost = function(iHost, iList, iEtc, iMsg, iCallback, iAll) {
+  sServices.listPost = function(iHost, iList, iEtc, iMsg, iCallback, _all) {
     var aHead = { op:'post', to:{}, etc:iEtc };
-    aHead.to[iList] = iAll || 2;
+    aHead.to[iList] = _all || 2;
     this._queue(iHost, aHead, iMsg, iCallback);
   };
 
@@ -1039,47 +1039,47 @@ var sProjects = {
     });
   };
 
-  sProjects.autogen = function(iJso, iCallback, iN) {
-    if (typeof iN === 'undefined')
-      iN = 0;
-    if (iN === iJso.length)
+  sProjects.autogen = function(iJso, iCallback, _n) {
+    if (typeof _n === 'undefined')
+      _n = 0;
+    if (_n === iJso.length)
       return iCallback();
-    sProjects.db.exec("INSERT INTO project (oid, data, localData) VALUES ( '"+iJso[iN].project+"', '"+JSON.stringify(iJso[iN].data)+"', '{}' )", noOpCallback, function() {
-      var aPath = makePath(iJso[iN].project);
+    sProjects.db.exec("INSERT INTO project (oid, data, localData) VALUES ( '"+iJso[_n].project+"', '"+JSON.stringify(iJso[_n].data)+"', '{}' )", noOpCallback, function() {
+      var aPath = makePath(iJso[_n].project);
       var aDb = new sqlite.Database();
       aDb.open(aPath, function(err) {
         if (err) throw err;
         var aSql = createSchema(Project.prototype.schema, aPath) + "BEGIN TRANSACTION;";
         aDb.exec(aSql, noOpCallback, function() {
-          function aDataLoop(dataArray, dataN) {
-            if (dataN === dataArray.length) {
-              aDb.exec("COMMIT TRANSACTION", noOpCallback, function() {
-                aDb.close();
-                sProjects.autogen(iJso, iCallback, ++iN);
-              });
-              return;
-            }
-            switch(dataArray[dataN].type) {
-            case 'page':
-              aDb.exec("INSERT INTO page (oid, data, layout) VALUES \
-                ('"+dataArray[dataN].oid+"', '"+JSON.stringify(dataArray[dataN].data)+"', '"+JSON.stringify(dataArray[dataN].layout)+"')"
-                , noOpCallback, function() {
-                aDataLoop(dataArray, ++dataN);
-              });
-              return;
-            case 'part':
-              fs.writeFile(makePath(dataArray[dataN].oid), dataArray[dataN].data, 'utf8', function(err) {
-                if (err) throw err;
-                aDataLoop(dataArray, ++dataN);
-              });
-              return;
-            default:
-              throw new Error('unknown autogen type: '+dataArray[dataN].type);
-            }
-          }
-          aDataLoop(iJso[iN].list, 0);
+          fDataLoop(iJso[_n].list, 0);
         });
       });
+      function fDataLoop(dataArray, dataN) {
+        if (dataN === dataArray.length) {
+          aDb.exec("COMMIT TRANSACTION", noOpCallback, function() {
+            aDb.close();
+            sProjects.autogen(iJso, iCallback, ++_n);
+          });
+          return;
+        }
+        switch(dataArray[dataN].type) {
+        case 'page':
+          aDb.exec("INSERT INTO page (oid, data, layout) VALUES \
+            ('"+dataArray[dataN].oid+"', '"+JSON.stringify(dataArray[dataN].data)+"', '"+JSON.stringify(dataArray[dataN].layout)+"')"
+            , noOpCallback, function() {
+            fDataLoop(dataArray, ++dataN);
+          });
+          return;
+        case 'part':
+          fs.writeFile(makePath(dataArray[dataN].oid), dataArray[dataN].data, 'utf8', function(err) {
+            if (err) throw err;
+            fDataLoop(dataArray, ++dataN);
+          });
+          return;
+        default:
+          throw new Error('unknown autogen type: '+dataArray[dataN].type);
+        }
+      }
     });
   };
 
@@ -1136,30 +1136,30 @@ var sProjects = {
         return;
       }
       if (!iReq.data || !(iReq.jso.filemap instanceof Array))
-        return aQuit();
+        return fQuit();
       var aOff = 0, aFiles = iReq.jso.filemap;
       that.stmt.importProject.selectInvite.bind(1, aFiles[0].oid);
       that.stmt.importProject.selectInvite.stepOnce(function(err, row) {
         if (err) throw err;
         if (!row || !row.accept)
-          return aQuit();
+          return fQuit();
         that.stmt.importProject.selectProject.bind(1, aFiles[0].oid);
         that.stmt.importProject.selectProject.stepOnce(function(err, row) {
           if (err) throw err;
           if (row)
-            return aQuit();
-          aFileLoop(0);
+            return fQuit();
+          fFileLoop(0);
         });
       });
-      function aQuit() {
+      function fQuit() {
         sClients.respond(iReq, {});
       }
-      function aFileLoop(fileN) {
+      function fFileLoop(fileN) {
         if (fileN < aFiles.length) {
           fs.writeFile(makePath(aFiles[fileN].oid), iReq.data.slice(aOff, aOff+aFiles[fileN].size), function(err) {
             if (err) throw err;
             aOff += aFiles[fileN].size;
-            aFileLoop(++fileN);
+            fFileLoop(++fileN);
           });
           return;
         }
@@ -1345,28 +1345,28 @@ function Project(iRecord, iCallback) {
               var aRevBuf = aRevMsg._buf;
               delete aRevMsg._buf;
             }
-            that._finishRevision(that.db, JSON.parse(aRevPending.map), aRevMsg, aRevBuf, aDoneCall);
+            that._finishRevision(that.db, JSON.parse(aRevPending.map), aRevMsg, aRevBuf, fDone);
           });
         } else {
-          that.db.exec("INSERT OR IGNORE INTO revision (oid, map, parents) VALUES (' ', '"+that.revisionMapJson()+"', '{}')", noOpCallback, aDoneCall);
-        }
-        function aDoneCall() {
-          that.db.exec("SELECT map, parents FROM revision WHERE oid = ' '", function(err, row) {
-            if (err) throw err;
-            if (row) {
-              that.revisionMap = row.map ? JSON.parse(row.map) : that.revisionMapInit();
-              that.parentMap = JSON.parse(row.parents);
-            }
-          }, function() {
-            that.queue.next();
-            if (aHasPage)
-              iCallback();
-            else
-              that.handle_newPage(null, iCallback);
-          });
+          that.db.exec("INSERT OR IGNORE INTO revision (oid, map, parents) VALUES (' ', '"+that.revisionMapJson()+"', '{}')", noOpCallback, fDone);
         }
       });
     });
+    function fDone() {
+      that.db.exec("SELECT map, parents FROM revision WHERE oid = ' '", function(err, row) {
+        if (err) throw err;
+        if (row) {
+          that.revisionMap = row.map ? JSON.parse(row.map) : that.revisionMapInit();
+          that.parentMap = JSON.parse(row.parents);
+        }
+      }, function() {
+        that.queue.next();
+        if (aHasPage)
+          iCallback();
+        else
+          that.handle_newPage(null, iCallback);
+      });
+    }
   });
 }
 
@@ -1630,14 +1630,14 @@ console.log(partlist);
 
   Project.prototype.sendProject = function(iTo, iCallback) {
     var that = this;
-    var aMsgHead;
+    var aMsgHead, aPath;
     this.db.exec("SELECT oid, service, data FROM projects.project WHERE oid = '"+this.oid+"';", function(err, row) {
       if (err) throw err;
       if (row) aMsgHead = row;
     }, function() {
       aMsgHead.filemap = [{oid:aMsgHead.oid+'.temp', size:0}];
       var aOids = {};
-      var aPath = getPath(aMsgHead.oid);
+      aPath = getPath(aMsgHead.oid);
       dupFile(aPath, aPath+'.temp', function(err) {
         if (err) throw err;
         var aDb = new sqlite.Database();
@@ -1660,38 +1660,37 @@ console.log(partlist);
               }
           }, function() {
             aDb.close();
-            var aAllSize = 0;
-            aFileLoop(0);
-            function aFileLoop(fileN) {
-              if (fileN < aMsgHead.filemap.length) {
-                fs.readFile(getPath(aMsgHead.filemap[fileN].oid), function(err, buf) {
-                  if (err && err.errno !== process.ENOENT) throw err;
-                  if (err) {
-                    aMsgHead.filemap.splice(fileN, 1);
-                  } else {
-                    aMsgHead.filemap[fileN++].size = buf;
-                    aAllSize += buf.length;
-                  }
-                  aFileLoop(fileN);
-                });
-                return;
-              }
-              fs.unlink(aPath+'.temp', noOpCallback);
-              var aAllBuf = new Buffer(aAllSize);
-              for (var a=0, aOff=0; a < aMsgHead.filemap.length; aOff += aMsgHead.filemap[a++].size) {
-                aMsgHead.filemap[a].size.copy(aAllBuf, aOff, 0);
-                aMsgHead.filemap[a].size = aMsgHead.filemap[a].size.length;
-              }
-              aMsgHead.filemap[0].oid = aMsgHead.oid;
-              aMsgHead.type = 'project';
-              var aTo = {};
-              aTo[iTo] = 1;
-              sServices.post(that.service, aTo, aMsgHead, aAllBuf, iCallback);
-            }
+            fFileLoop(0, 0);
           });
         });
       });
     });
+    function fFileLoop(fileN, allSize) {
+      if (fileN < aMsgHead.filemap.length) {
+        fs.readFile(getPath(aMsgHead.filemap[fileN].oid), function(err, buf) {
+          if (err && err.errno !== process.ENOENT) throw err;
+          if (err) {
+            aMsgHead.filemap.splice(fileN, 1);
+          } else {
+            aMsgHead.filemap[fileN++].size = buf;
+            allSize += buf.length;
+          }
+          fFileLoop(fileN, allSize);
+        });
+        return;
+      }
+      fs.unlink(aPath+'.temp', noOpCallback);
+      var aAllBuf = new Buffer(allSize);
+      for (var a=0, aOff=0; a < aMsgHead.filemap.length; aOff += aMsgHead.filemap[a++].size) {
+        aMsgHead.filemap[a].size.copy(aAllBuf, aOff, 0);
+        aMsgHead.filemap[a].size = aMsgHead.filemap[a].size.length;
+      }
+      aMsgHead.filemap[0].oid = aMsgHead.oid;
+      aMsgHead.type = 'project';
+      var aTo = {};
+      aTo[iTo] = 1;
+      sServices.post(that.service, aTo, aMsgHead, aAllBuf, iCallback);
+    }
   };
 
   Project.prototype.checkConflict = function(iRevision, oNotify, iCallback, _state) {
@@ -1733,7 +1732,7 @@ console.log(partlist);
         _state = { conflict:[], chain:{}, parents:{}, ancestors:{}, authorJoined:_state };
         for (var a in iRevision.parents)
           _state.parents[a] = _state.ancestors[a] = iRevision.parents[a];
-        aLogConflict(iRevision, { rowid:row.rowid+1, oid:' ', map:that.revisionMap, parents:that.parentMap, author:sUUId, joined:'3333' }, 'chain');
+        fLogConflict(iRevision, { rowid:row.rowid+1, oid:' ', map:that.revisionMap, parents:that.parentMap, author:sUUId, joined:'3333' }, 'chain');
       }
       var aOidCounter = +row.oid.slice(row.oid.indexOf('.')+1);
       row.map = JSON.parse(row.map);
@@ -1742,13 +1741,13 @@ console.log(partlist);
         _state.ancestors[row.author] = row.parents[row.author];
         row.isParent = true;
       }
-      aLogConflict(iRevision, row, 'chain');
+      fLogConflict(iRevision, row, 'chain');
       if (iRevision.parents[row.author] === 0 && !(row.author in row.parents) || aOidCounter === iRevision.parents[row.author])
         delete _state.parents[row.author];
       for (var any in _state.parents) break;
       if (any)
         return that.checkConflict(iRevision, oNotify, iCallback, _state);
-      function aLogConflict(main, alt, chain) {
+      function fLogConflict(main, alt, chain) {
         if (chain) {
           for (var a in alt.parents) {
             if (alt.parents[a] === 0)
@@ -1761,19 +1760,19 @@ console.log(partlist);
         }
         if (!alt.sideline && !alt.isParent || alt.sideline && alt.isParent || !chain && main.joined > alt.joined) {
           if (alt.map.touch && main.map.touch)
-            return aRecur(true);
+            return fRecur(true);
           for (var aPg in main.map.page) {
             if (aPg in alt.map.page) {
               if (alt.map.page[aPg].op === '!' && main.map.page[aPg].op === '!')
-                return aRecur(true);
+                return fRecur(true);
               for (var aPt in main.map.page[aPg].part)
                 if (aPt in alt.map.page[aPg].part)
-                  return aRecur(true);
+                  return fRecur(true);
             }
           }
         }
-        return aRecur(false);
-        function aRecur(hasConflict) {
+        return fRecur(false);
+        function fRecur(hasConflict) {
           if (hasConflict) {
             if (!alt.sideline || alt.isParent) {
               for (var a=0; a < _state.conflict.length && alt.rowid < _state.conflict[a].rowid; ++a) {}
@@ -1787,10 +1786,10 @@ console.log(partlist);
             return;
           if (!chain)
             for (var a in _state.chain[alt.oid])
-              aLogConflict(main, _state.chain[alt.oid][a]);
+              fLogConflict(main, _state.chain[alt.oid][a]);
           if (hasConflict)
             for (var a in _state.chain[alt.oid])
-              aLogConflict(alt, _state.chain[alt.oid][a]);
+              fLogConflict(alt, _state.chain[alt.oid][a]);
         }
       }
       that.stmt.checkConflict.revision.reset();
@@ -1805,10 +1804,10 @@ console.log(partlist);
         var aRevN = 0;
         var aModList = { proj:{}, page:{}, part:{} };
         if (aSidelinedCurr)
-          that.handle_commitRevision(null, aSideline);
+          that.handle_commitRevision(null, fSideline);
         else
-          aSideline();
-        function aSideline(newrev) {
+          fSideline();
+        function fSideline(newrev) {
           if (newrev) {
             _state.conflict[0].oid = newrev.oid;
             oNotify.push(newrev);
@@ -1850,13 +1849,13 @@ console.log(partlist);
                 var aPath = getPath(aObject);
                 if (!diffRow.data) {
                   //. flag file for removal by finishRevision
-                  aForwardDiff({errno:process.ENOENT});
+                  fForwardDiff({errno:process.ENOENT});
                 } else if (aSidelinedCurr && aRevN === 0) {
-                  dupFile(aPath, aPath+'.temp', aForwardDiff);
+                  dupFile(aPath, aPath+'.temp', fForwardDiff);
                 } else {
-                  xdPatch(aModList.part[aObject] || aPath, diffRow.data, aPath+'.temp', aForwardDiff);
+                  xdPatch(aModList.part[aObject] || aPath, diffRow.data, aPath+'.temp', fForwardDiff);
                 }
-                function aForwardDiff(err) {
+                function fForwardDiff(err) {
                   if (err && err.errno !== process.ENOENT) throw err;
                   xdDiff(!err && aPath+'.temp', aModList.part[aObject] || (aSidelinedCurr && aRevN === 0 ? aPath+'.w' : aPath), function(err, diff) {
                     if (err) throw err;
@@ -1869,7 +1868,7 @@ console.log(partlist);
                         if (err && err.errno !== process.ENOENT) throw err;
                         if (!err && !aModList.part[aObject])
                           aModList.part[aObject] = aPath+'.new';
-                        aSideline();
+                        fSideline();
                       });
                     });
                   });
@@ -1884,12 +1883,12 @@ console.log(partlist);
                       row.layout = JSON.parse(row.layout);
                     row.data = JSON.parse(row.data);
                     aModList[aType][aObject] = row;
-                    aUpdateData();
+                    fUpdateData();
                   });
                 } else {
-                  aUpdateData();
+                  fUpdateData();
                 }
-                function aUpdateData() {
+                function fUpdateData() {
                   that.unpatch(aModList[aType][aObject], JSON.parse(diffRow.data));
                   that.stmt.checkConflict['set'+aType].bind(1, aObject);
                   that.stmt.checkConflict['set'+aType].bind(2, JSON.stringify(aModList[aType][aObject].data));
@@ -1897,7 +1896,7 @@ console.log(partlist);
                     that.stmt.checkConflict['set'+aType].bind(3, JSON.stringify(aModList[aType][aObject].layout));
                   that.stmt.checkConflict['set'+aType].stepOnce(function(err, row) {
                     if (err) throw err;
-                    aSideline();
+                    fSideline();
                   });
                 }
               }
@@ -1924,10 +1923,10 @@ console.log(partlist);
             function fNext() {
               oNotify.push({type:'revisionsideline', oid:aConflict.oid});
               if (++aRevN < _state.conflict.length)
-                aSideline();
+                fSideline();
               else
-                aSaveState();
-              function aSaveState() {
+                fSaveState();
+              function fSaveState() {
                 for (var a=0; a < states.length; ++a) {
                   if (!states[a]._update)
                     continue;
@@ -1936,7 +1935,7 @@ console.log(partlist);
                   that.stmt.checkConflict.setstate.bind(2, JSON.stringify(states[a].state));
                   that.stmt.checkConflict.setstate.stepOnce(function(err, row) {
                     if (err) throw err;
-                    aSaveState();
+                    fSaveState();
                   });
                   //. notify subscribers whose state changed
                   return;
@@ -2427,13 +2426,13 @@ console.log(partlist);
     }
   };
 
-  Project.prototype.unpatch = function(iOrig, iDiff) {
+  Project.prototype.unpatch = function(ioOrig, iDiff) {
     this.patch(iOrig, iDiff, true);
   };
 
-  Project.prototype.patch = function(iOrig, iDiff, iUndo) {
-    var aAdd = iDiff[iUndo ? 'del' : 'add'];
-    var aDel = iDiff[iUndo ? 'add' : 'del'];
+  Project.prototype.patch = function(ioOrig, iDiff, _undo) {
+    var aAdd = iDiff[_undo ? 'del' : 'add'];
+    var aDel = iDiff[_undo ? 'add' : 'del'];
     if (aAdd.data)
       iOrig.data = aAdd.data; // project & page
     if (aAdd.layout) {      // page
@@ -2491,7 +2490,14 @@ console.log(partlist);
   Project.prototype.handle_writePart = function(iReq) {
     var that = this;
     var aPath = makePath(iReq.part);
-    var aMap = function() {
+    if (iReq.data)
+      fs.writeFile(aPath+'.w', iReq.data, 'utf8', function(fileErr) {
+        if (fileErr) throw fileErr;
+        fMap();
+      });
+    else
+      fMap();
+    function fMap() {
       fs.stat(aPath, function(statErr, stats) {
         if (!that.revisionMap.page[iReq.page])
           that.revisionMap.page[iReq.page] = {op:'.', touch:null, part:{}};
@@ -2505,14 +2511,7 @@ console.log(partlist);
           sClients.respond(iReq, {status:'ok'});
         });
       });
-    };
-    if (iReq.data)
-      fs.writeFile(aPath+'.w', iReq.data, 'utf8', function(fileErr) {
-        if (fileErr) throw fileErr;
-        aMap();
-      });
-    else
-      aMap();
+    }
   };
 
   Project.prototype._makeDiffs = function(iRev, iBufList, iDiffList, iCallback) {
@@ -2532,17 +2531,15 @@ console.log(partlist);
       });
       return;
     }
-    if (iBufList && !iCallback.count) {
-      var aFn = iCallback;
-      iCallback = function() { if (--iCallback.count === 0) aFn(); };
+    if (!iCallback.count)
       iCallback.count = 1;
-    }
     for (var aPg in that.revisionMap.page) {
       if (that.revisionMap.page[aPg].done)
         continue;
       for (var aPt in that.revisionMap.page[aPg].part) {
         if (that.revisionMap.page[aPg].part[aPt].done)
           continue;
+        that.revisionMap.page[aPg].part[aPt].done = true;
         var aPath = getPath(aPt, true);
         fs.stat(aPath, function(statErr, stats) {
           if (iBufList) {
@@ -2551,26 +2548,25 @@ console.log(partlist);
               if (err) throw err;
               iBufList.push(diff);
               iDiffList.push({oid:aPt, size:diff.length, type:'part'});
-              iCallback();
+              fCb();
             });
           }
           if (statErr)
-            return aInsert(null);
+            return fInsert(null);
           xdDiff(aPath+'.w', aPath, function(err, diff) {
             if (err) throw err;
-            aInsert(diff);
+            fInsert(diff);
           });
-          function aInsert(diff) {
-            that.stmt.makeDiffs.insertDiff.bind(1, aPt);
-            that.stmt.makeDiffs.insertDiff.bind(2, iRev);
-            that.stmt.makeDiffs.insertDiff.bind(3, diff);
-            that.stmt.makeDiffs.insertDiff.stepOnce(function(err, row) {
-              if (err) throw err;
-              that._makeDiffs(iRev, iBufList, iDiffList, iCallback);
-            });
-          }
         });
-        that.revisionMap.page[aPg].part[aPt].done = true;
+        function fInsert(diff) {
+          that.stmt.makeDiffs.insertDiff.bind(1, aPt);
+          that.stmt.makeDiffs.insertDiff.bind(2, iRev);
+          that.stmt.makeDiffs.insertDiff.bind(3, diff);
+          that.stmt.makeDiffs.insertDiff.stepOnce(function(err, row) {
+            if (err) throw err;
+            that._makeDiffs(iRev, iBufList, iDiffList, iCallback);
+          });
+        }
         return;
       }
       that.revisionMap.page[aPg].done = true;
@@ -2630,7 +2626,11 @@ console.log(partlist);
         });
       });
     } else {
-      iCallback();
+      fCb();
+    }
+    function fCb() {
+      if (--iCallback.count === 0)
+        iCallback();
     }
   };
 
@@ -2671,50 +2671,50 @@ console.log(partlist);
       }
     }, function () {
       if (iNoSendCallback)
-        aFinish({});
+        fFinish({});
       else
-        that.getMembers(null, aFinish);
-      function aFinish(list) {
-        for (var aAny in list) break;
-        var aBufList = aAny && [];
-        aRev.list = aAny && [];
-        that._makeDiffs(aRev.oid, aBufList, aRev.list, function() {
-          aRev.type = 'revision';
-          if (!aAny)
-            return aCommit();
-          var aRevData = 0;
-          for (var a=0; a < aRev.list.length; ++a)
-            aRevData += aRev.list[a].size;
-          aRevData = new Buffer(aRevData);
-          for (var aOff=0, a=0; a < aBufList.length; aOff += aBufList[a++].length) {
-            if (aBufList[a] instanceof Buffer)
-              aBufList[a].copy(aRevData, aOff, 0);
-            else
-              aRevData.write(aBufList[a], aOff);
-          }
-          aRev.project = that.oid;
-          storeFile(sSendDir+aRev.oid, MqClient.packMsg(aRev, aRevData), function(err) {
-            if (err) throw err;
-            aCommit(aRevData);
-          });
-        });
-        function aCommit(revdata) {
-          that.db.exec("UPDATE revision SET map = NULL, parents = '"+JSON.stringify(that.parentMap)+"' WHERE oid = ' ';\
-                           RELEASE commit_revision;", noOpCallback, function () {
-            if (iNoSendCallback)
-              return iNoSendCallback(aRev);
-            that._finishRevision(that.db, that.revisionMap, revdata && aRev, revdata, function() {
-              that.revisionMap = that.revisionMapInit();
-              delete aRev.list;
-              sClients.notify(iReq, aRev, that.oid);
-            });
-          });
-        }
-      }
+        that.getMembers(null, fFinish);
     });
+    function fFinish(list) {
+      for (var aAny in list) break;
+      var aBufList = aAny && [];
+      aRev.list = aAny && [];
+      that._makeDiffs(aRev.oid, aBufList, aRev.list, function() {
+        aRev.type = 'revision';
+        if (!aAny)
+          return fCommit();
+        var aRevData = 0;
+        for (var a=0; a < aRev.list.length; ++a)
+          aRevData += aRev.list[a].size;
+        aRevData = new Buffer(aRevData);
+        for (var aOff=0, a=0; a < aBufList.length; aOff += aBufList[a++].length) {
+          if (aBufList[a] instanceof Buffer)
+            aBufList[a].copy(aRevData, aOff, 0);
+          else
+            aRevData.write(aBufList[a], aOff);
+        }
+        aRev.project = that.oid;
+        storeFile(sSendDir+aRev.oid, MqClient.packMsg(aRev, aRevData), function(err) {
+          if (err) throw err;
+          fCommit(aRevData);
+        });
+      });
+    }
+    function fCommit(revdata) {
+      that.db.exec("UPDATE revision SET map = NULL, parents = '"+JSON.stringify(that.parentMap)+"' WHERE oid = ' ';\
+                       RELEASE commit_revision;", noOpCallback, function () {
+        if (iNoSendCallback)
+          return iNoSendCallback(aRev);
+        that._finishRevision(that.db, that.revisionMap, revdata && aRev, revdata, function() {
+          that.revisionMap = that.revisionMapInit();
+          delete aRev.list;
+          sClients.notify(iReq, aRev, that.oid);
+        });
+      });
+    }
   };
 
-  Project.prototype._finishRevision = function (iDb, iMap, iRev, iRevData, iCallback, _done) {
+  Project.prototype._finishRevision = function(iDb, iMap, iRev, iRevData, iCallback, _done) {
     var that = this;
     if (!_done)
       _done = { pg:{}, pt:{} };
