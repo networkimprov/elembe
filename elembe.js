@@ -712,6 +712,9 @@ var sServices = {
       }
       sClients.notify(null, {type:'services', list:sServices.list(iRow.host)});
     });
+    iRow.conn.on('error', function(err) {
+      console.log('invalid message from service '+iRow.host+': '+err.message);
+    });
     iCallback(iRow);
   };
 
