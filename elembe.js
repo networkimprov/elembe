@@ -2430,21 +2430,21 @@ console.log(partlist);
   };
 
   Project.prototype.unpatch = function(ioOrig, iDiff) {
-    this.patch(iOrig, iDiff, true);
+    this.patch(ioOrig, iDiff, true);
   };
 
   Project.prototype.patch = function(ioOrig, iDiff, _undo) {
     var aAdd = iDiff[_undo ? 'del' : 'add'];
     var aDel = iDiff[_undo ? 'add' : 'del'];
     if (aAdd.data)
-      iOrig.data = aAdd.data; // project & page
+      ioOrig.data = aAdd.data; // project & page
     if (aAdd.layout) {      // page
       for (var a=0; a < aDel.layout.length; ++a) {
-        for (var aI=0; iOrig.layout[aI].pid !== aDel.layout[a].pid; ++aI) {}
-        iOrig.layout.splice(aI, 1);
+        for (var aI=0; ioOrig.layout[aI].pid !== aDel.layout[a].pid; ++aI) {}
+        ioOrig.layout.splice(aI, 1);
       }
       for (var a=0; a < aAdd.layout.length; ++a)
-        iOrig.layout.push(aAdd.layout[a]);
+        ioOrig.layout.push(aAdd.layout[a]);
     }
   };
 
@@ -2534,8 +2534,11 @@ console.log(partlist);
       });
       return;
     }
-    if (!iCallback.count)
+    if (iBufList && !iCallback.count) {
+      var aCb = iCallback;
+      iCallback = function() { if (--iCallback.count === 0) aCb(); };
       iCallback.count = 1;
+    }
     for (var aPg in that.revisionMap.page) {
       if (that.revisionMap.page[aPg].done)
         continue;
@@ -2551,7 +2554,7 @@ console.log(partlist);
               if (err) throw err;
               iBufList.push(diff);
               iDiffList.push({oid:aPt, size:diff.length, type:'part'});
-              fCb();
+              iCallback();
             });
           }
           if (statErr)
@@ -2629,11 +2632,7 @@ console.log(partlist);
         });
       });
     } else {
-      fCb();
-    }
-    function fCb() {
-      if (--iCallback.count === 0)
-        iCallback();
+      iCallback();
     }
   };
 
