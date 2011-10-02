@@ -2,10 +2,13 @@ Elembe Issues
 
 code cleanup
   Use prepared stmts when including parameters from relay messages
+  rename 'import' functions
   replace literals with constants
-  named local functions start with 'f'
-  argument names used internally start with '_'
-  turn into classes with methods: revisionMap
+  apply all codestyle name conventions
+  turn into classes with methods: revisionMap, parentMap
+
+storeFile use temporary directory (?) to avoid partial files on crash
+sync all written files prior to commit
 
 verify request parameter types
 verify client message parameters
@@ -14,8 +17,7 @@ notice to user and set read-only when loaded pages revised/sidelined
   push loaded page to rev cache on user ack
   not for revision author
 
-Sidelining 
-  Fix readRevision for sidelined revisions
+Sidelining
   flag when uncommitted revision sidelined
   force save of client data before applying incoming rev?
   parts of sidelined rev can be pushed into current revision
@@ -33,12 +35,14 @@ create thorough test sequence
 
 event & error logging; log rotation
 
-project aes key
-  en/decrypt messages on queuing
+encryption
+  project aes key
+  user public key, hosted CA, relay request & store certs, store certs in user profiles
+  en/decrypt messages on queue/deliver
 
-etc contents to msg body
-  header type field (json, json-mixed, binary...)
-  header length field for json-mixed
+wsstream read from filestream; sServices._sendNext send file
+wsstream write incrementally; sServices.on('deliver') stream data after header
+stream data to http connections
 
 profiles
   table with uuid, data (json), aes key
@@ -46,10 +50,10 @@ profiles
     editor app
 
 client
+  on revision, update page in titles palette
   prevent add member when no revision filed
   alternate page editors; pgedit code to module
-
-sync all written files prior to commit
+  pgedit undo/redo
 
 port to node 0.5
 switch to sqlite3 module
@@ -60,6 +64,8 @@ activate new node for user
   secondary register with services, hold any new msgs til project arrives
   primary send projects
   primary display progress bar
+
+xapian module and search features
 
 websocket.MQ
   multiple apps/ports per node
@@ -112,4 +118,5 @@ branching
   commit current in branch if conflicted
   set branch for incoming rev
   goBranch applies revs in revisioncache
+
 

@@ -1,0 +1,18 @@
+
+Variable Names
+
+n - Node internal module
+l - external module
+k - constant
+s - module or prototype variable
+a - local variable
+f - local function
+i - input argument
+o - output argument
+io- input & output argument
+_ - internal use argument or object member
+  - (none) object member or local function argument
+
+Class Names begin with a capital letter
+Function names begin with a lowercase letter
+
