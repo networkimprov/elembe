@@ -11,10 +11,10 @@ var sqlite = require('./sqliteplus');
 var io = require('socket.io');
 var uuid = require('uuidjs');
 var gm = require('gm');
-var inotify = require('inotify');
+var Inotify = require('inotify').Inotify;
 var MqClient = require('mqclient');
 
-var schema = {
+var kSchema = {
   instance: {
     instance: {
       uuid: 'text',
@@ -417,8 +417,6 @@ var sUUId;
 var sRecord = null;
 var sPlayback = null;
 
-var Inotify = inotify.Inotify;
-
 function main() {
   var aAutogen;
   function fExcluded() { return aAutogen || sRecord || sPlayback ? true : false }
@@ -463,7 +461,7 @@ function main() {
   var aDb = new sqlite.Database();
   aDb.open(sMainDir+'instance', function (openErr) {
     if (openErr) throw openErr;
-    var aSchemaSql = createSchema(schema);
+    var aSchemaSql = createSchema(kSchema);
     aSchemaSql += aAutogen ? "INSERT INTO instance (uuid) VALUES ('"+uuid.generate()+"');" : "SELECT uuid FROM instance;";
     aDb.exec(aSchemaSql, function(err, row) {
       if (err) throw err;
@@ -518,17 +516,17 @@ function main() {
   });
 }
 
-var sFileMap = {
+var kFileMap = {
   '/':'client/_suae_.html',
   '/socket-io.js':'socket.io/socket.io.js',
   '/applaunch':'client/applaunch.xpi',
   '/test':'dbtest.html',
   '/part':''
 };
-var sTypeMap = { js:'text/javascript', css:'text/css', html:'text/html', xpi:'application/x-xpinstall' };
+var kTypeMap = { js:'text/javascript', css:'text/css', html:'text/html', xpi:'application/x-xpinstall' };
 
 function httpRequest(req, res) {
-  var aUrl = url.parse(req.url, true), aFile = sFileMap[aUrl.pathname];
+  var aUrl = url.parse(req.url, true), aFile = kFileMap[aUrl.pathname];
   if (aFile === '') {
     if (req.method.toLowerCase() === 'post') {
       req.setEncoding('binary');
@@ -580,7 +578,7 @@ function httpRequest(req, res) {
         res.end('Invalid Resource');
         return;
       }
-      var aHeaders = { 'Content-Type': sTypeMap[aFile.slice(aFile.lastIndexOf('.')+1)] };
+      var aHeaders = { 'Content-Type': kTypeMap[aFile.slice(aFile.lastIndexOf('.')+1)] };
       if (!req.headers.cookie || req.headers.cookie.indexOf('anvlclient=') < 0)
         aHeaders['Set-Cookie'] = 'anvlclient='+uuid.generate()+'; expires=31-Oct-3333 01:01:01 GMT; path=/';
       res.writeHead(200, aHeaders);
@@ -588,8 +586,6 @@ function httpRequest(req, res) {
     });
   }
 }
-
-var MqClient = require('mqclient');
 
 var sServices = {
   db: null,
@@ -977,12 +973,6 @@ var sAttachments = {
 var sProjects = {
   db: null,
   queue: new Queue,
-  newSql: "\
-    BEGIN TRANSACTION;\
-    "+kIncrOid+";\
-    INSERT INTO project VALUES ( ("+kNewOid+"), '', NULL, '{\"name\":\"Untitled\", \"blurb\":\"something\", \"created\":\"' || datetime('now') || '\"}', '{}' );\
-    SELECT oid, dataw AS data, service, 1 AS installed FROM project WHERE rowid = last_insert_rowid();\
-    COMMIT TRANSACTION;",
   stmt: {}
 };
 
@@ -1003,6 +993,8 @@ var sProjects = {
     this.db.close();
   };
 
+  sProjects.kClientNavInit = {sort:'name', history: {n:1, len:1, i: [{proj:'#autogen.01000', page:'#autogen.01010'}]}};
+
   sProjects.getClientNav = {};
   sProjects.handle_getClientNav = function(iReq) {
     var that = this;
@@ -1019,7 +1011,7 @@ var sProjects = {
       if (stepErr) throw stepErr;
       if (row)
         row.data = JSON.parse(row.data);
-      sClients.respond(iReq, row || {data:{sort:'name', history: {n:1, len:1, i: [{proj:'#autogen.01000', page:'#autogen.01010'}]}}});
+      sClients.respond(iReq, row || {data:that.kClientNavInit});
     });
   };
 
@@ -1052,7 +1044,7 @@ var sProjects = {
       var aDb = new sqlite.Database();
       aDb.open(aPath, function(err) {
         if (err) throw err;
-        var aSql = createSchema(Project.prototype.schema, aPath) + "BEGIN TRANSACTION;";
+        var aSql = createSchema(Project.prototype.kSchema, aPath) + "BEGIN TRANSACTION;";
         aDb.exec(aSql, noOpCallback, function() {
           fDataLoop(iJso[_n].list, 0);
         });
@@ -1244,10 +1236,17 @@ var sProjects = {
     });
   };
 
+  sProjects.kNewSql = "\
+    BEGIN TRANSACTION;\
+    "+kIncrOid+";\
+    INSERT INTO project VALUES ( ("+kNewOid+"), '', NULL, '{\"name\":\"Untitled\", \"blurb\":\"something\", \"created\":\"' || datetime('now') || '\"}', '{}' );\
+    SELECT oid, dataw AS data, service, 1 AS installed FROM project WHERE rowid = last_insert_rowid();\
+    COMMIT TRANSACTION;";
+
   sProjects.newProject = {};
   sProjects.handle_newProject = function(iReq) {
     var aProj;
-    this.db.exec(this.newSql, function(err, row) {
+    this.db.exec(this.kNewSql, function(err, row) {
       if (err) throw err;
       if (row) aProj = row;
     }, function() {
@@ -1319,7 +1318,7 @@ function Project(iRecord, iCallback) {
   var aPath = makePath(iRecord.oid);
   that.db.open(aPath, function(openErr) {
     if (openErr) throw openErr;
-    var aSchemaSql = createSchema(that.schema, aPath);
+    var aSchemaSql = createSchema(that.kSchema, aPath);
     aSchemaSql += "SELECT 1 AS haspage FROM page LIMIT 1;\
       SELECT oid, map FROM revision WHERE oid LIKE '!%';";
     var aHasPage, aRevPending;
@@ -1381,7 +1380,7 @@ function Project(iRecord, iCallback) {
     delete Project.list[this.oid];
   };
 
-  Project.prototype.schema = {
+  Project.prototype.kSchema = {
     instance: {},
     projects: {},
     filename: {
@@ -1647,12 +1646,12 @@ console.log(partlist);
         aDb.open(aPath+'.temp', function(err) {
           if (err) throw err;
           aDb.exec("BEGIN TRANSACTION;\
-                       UPDATE page SET layoutw = NULL, dataw = NULL;\
-                       UPDATE revision SET map = NULL WHERE oid = ' ';\
-                       DELETE from message;\
-                       DELETE from clientstate;\
-                       COMMIT TRANSACTION;\
-                       SELECT layout from page;", function(err, row) {
+                    UPDATE page SET layoutw = NULL, dataw = NULL;\
+                    UPDATE revision SET map = NULL WHERE oid = ' ';\
+                    DELETE from message;\
+                    DELETE from clientstate;\
+                    COMMIT TRANSACTION;\
+                    SELECT layout from page;", function(err, row) {
             if (err) throw err;
             if (!row) return;
             var aLayout = JSON.parse(row.layout);
@@ -2051,9 +2050,9 @@ console.log(partlist);
     var aUpdt = { type:'memberAlias', project:that.oid, alias:iReq.alias, uid:sUUId };
     sServices.listPostAll(that.service, that.oid, aUpdt, null, function() {
       that.db.exec("BEGIN TRANSACTION;\
-                       INSERT OR IGNORE INTO member VALUES ( '"+sUUId+"', '"+iReq.alias+"', '"+(new Date).toISOString()+"', NULL );\
-                       UPDATE member SET alias = '"+iReq.alias+"' WHERE uid = '"+sUUId+"';\
-                       COMMIT TRANSACTION;", noOpCallback, function() {
+                    INSERT OR IGNORE INTO member VALUES ( '"+sUUId+"', '"+iReq.alias+"', '"+(new Date).toISOString()+"', NULL );\
+                    UPDATE member SET alias = '"+iReq.alias+"' WHERE uid = '"+sUUId+"';\
+                    COMMIT TRANSACTION;", noOpCallback, function() {
         sClients.notify(iReq, {type:'setuseralias', alias:iReq.alias}, that.oid);
       });
     });
@@ -2107,7 +2106,7 @@ console.log(partlist);
     sServices.listEdit(that.service, that.oid, 'remove', sUUId, aDel, null, function() {
       var aRow;
       that.db.exec("UPDATE member SET left = 'pending' WHERE uid = '"+sUUId+"';\
-                       SELECT alias, joined, left, uid FROM member WHERE uid = '"+sUUId+"';", function(err, row) {
+                    SELECT alias, joined, left, uid FROM member WHERE uid = '"+sUUId+"';", function(err, row) {
         if (err) throw err;
         if (row) aRow = row;
       }, function() {
@@ -2183,7 +2182,7 @@ console.log(partlist);
     });
   };
 
-  Project.prototype.sqlNewPage = "\
+  Project.prototype.kNewPageSql = "\
     BEGIN TRANSACTION;\
     "+kIncrOid+";\
     INSERT INTO page VALUES ( ("+kNewOid+"), NULL, '{\"name\":\"Untitled\", \"added\":\"' || datetime('now') || '\"}', NULL, '[]' );\
@@ -2193,7 +2192,7 @@ console.log(partlist);
   Project.prototype.handle_newPage = function(iReq, iCallback) {
     var aPage;
     var that = this;
-    that.db.exec(this.sqlNewPage, function(stepErr, row) {
+    that.db.exec(this.kNewPageSql, function(stepErr, row) {
       if (stepErr) throw stepErr;
       if (row) aPage = row;
     }, function() {
@@ -2448,7 +2447,7 @@ console.log(partlist);
     }
   };
 
-  Project.prototype.sqlNewPart = "\
+  Project.prototype.kNewPartSql = "\
     BEGIN TRANSACTION;\
     "+kIncrOid+"; "+kNewOid+";\
     "+kIncrOid+"; "+kNewOid+";\
@@ -2458,7 +2457,7 @@ console.log(partlist);
   Project.prototype.handle_newPart = function(iReq) {
     var that = this;
     var aNewOid = {};
-    this.db.exec(this.sqlNewPart, function(stepErr, row) {
+    this.db.exec(this.kNewPartSql, function(stepErr, row) {
       if (stepErr) throw stepErr;
       if (row)
         if (aNewOid.a)
@@ -2704,7 +2703,7 @@ console.log(partlist);
     }
     function fCommit(revdata) {
       that.db.exec("UPDATE revision SET map = NULL, parents = '"+JSON.stringify(that.parentMap)+"' WHERE oid = ' ';\
-                       RELEASE commit_revision;", noOpCallback, function () {
+                    RELEASE commit_revision;", noOpCallback, function () {
         if (iNoSendCallback)
           return iNoSendCallback(aRev);
         that._finishRevision(that.db, that.revisionMap, revdata && aRev, revdata, function() {
