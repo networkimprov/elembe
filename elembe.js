@@ -8,6 +8,7 @@ var child = require('child_process');
 var Buffer = require('buffer').Buffer;
 
 var sqlite = require('./sqliteplus');
+var xd = require('./xdelta');
 var io = require('socket.io');
 var uuid = require('uuidjs');
 var gm = require('gm');
@@ -181,39 +182,6 @@ function syncFile(iPath, iCallback) {
       iCallback(err);
     });
   });
-}
-
-function xdDiff(iSrc, iDest, iCallback) {
-  /*if (typeof iCallback === 'undefined' && typeof oList === 'function') {
-    iCallback = oList;
-    oList = null;
-  }*/
-  var aC = child.spawn('xdelta3', iSrc ? ['-e', '-s', iSrc, iDest] : ['-e', iDest]);
-  var aErr = 'unknown error';
-  aC.stderr.on('data', function(data) { aErr = data.toString() });
-  var aBufLen = 0, aBufList = [];
-  aC.stdout.on('data', function(data) { aBufList.push(data); aBufLen += data.length; });
-  aC.on('exit', function(code) {
-    if (code)
-      return iCallback(new Error('xdDiff failed: '+aErr));
-    if (aBufList.length === 1)
-      return iCallback(null, aBufList[0]);
-    var aDiff = new Buffer(aBufLen);
-    for (var a=0, aOff=0; a < aBufList.length; aOff += aBufList[a++].length)
-      aBufList[a].copy(aDiff, aOff, 0);
-    iCallback(null, aDiff);
-  });
-}
-
-function xdPatch(iSrc, iDiff, iDest, iCallback) {
-  var aC = child.spawn('xdelta3', iSrc ? ['-d', '-c', '-s', iSrc] : ['-d', '-c']);
-  var aErr = 'unknown error';
-  aC.stderr.on('data', function(data) { aErr = data.toString() });
-  sys.pump(aC.stdout, fs.createWriteStream(iDest), noOpCallback);
-  aC.on('exit', function(code) {
-    iCallback(code ? new Error('xdPatch failed: '+aErr) : undefined);
-  });
-  aC.stdin.end(iDiff);
 }
 
 function RecordPlayback(iType, iFile) {
@@ -1587,13 +1555,13 @@ console.log(partlist);
             else
               fs.stat(aPath, fApplyDiff);
             function fApplyDiff(noPath) {
-              xdPatch(!noPath && aPath, aDiff, aPath+'.temp', function(err) {
+              xd.patch(!noPath && aPath, aDiff, aPath+'.temp', function(err) {
                 if (err) throw err;
                 fs.rename(aPath+'.temp', iReq.jso.map.page.sideline.part[iReq.jso.list[iterN].oid] || aPath+'.new', function(err) {
                   if (err) throw err;
                   if (noPath)
                     return fSetDiff(null);
-                  xdDiff(iReq.jso.map.page.sideline.part[iReq.jso.list[iterN].oid] || aPath+'.new', aPath, function(err, diff) {
+                  xd.diff(iReq.jso.map.page.sideline.part[iReq.jso.list[iterN].oid] || aPath+'.new', aPath, function(err, diff) {
                     if (err) throw err;
                     fSetDiff(diff);
                   });
@@ -1855,11 +1823,11 @@ console.log(partlist);
                 } else if (aSidelinedCurr && aRevN === 0) {
                   dupFile(aPath, aPath+'.temp', fForwardDiff);
                 } else {
-                  xdPatch(aModList.part[aObject] || aPath, diffRow.data, aPath+'.temp', fForwardDiff);
+                  xd.patch(aModList.part[aObject] || aPath, diffRow.data, aPath+'.temp', fForwardDiff);
                 }
                 function fForwardDiff(err) {
                   if (err && err.errno !== process.ENOENT) throw err;
-                  xdDiff(!err && aPath+'.temp', aModList.part[aObject] || (aSidelinedCurr && aRevN === 0 ? aPath+'.w' : aPath), function(err, diff) {
+                  xd.diff(!err && aPath+'.temp', aModList.part[aObject] || (aSidelinedCurr && aRevN === 0 ? aPath+'.w' : aPath), function(err, diff) {
                     if (err) throw err;
                     that.stmt.checkConflict.setdiff.bind(1, aConflict.oid);
                     that.stmt.checkConflict.setdiff.bind(2, aObject);
@@ -2390,7 +2358,7 @@ console.log(partlist);
             }
             fs.stat(aRevCopy, function(statErr, stats) {
               var aSrc = !statErr ? aRevCopy : isSideline && aNewPart ? null : getPath(aPt);
-              xdPatch(aSrc, row.data, aRevCopy+'.temp', function(err) {
+              xd.patch(aSrc, row.data, aRevCopy+'.temp', function(err) {
                 if (err) throw err;
                 fs.rename(aRevCopy+'.temp', aRevCopy, function(err) {
                   if (err) throw err;
@@ -2549,7 +2517,7 @@ console.log(partlist);
         fs.stat(aPath, function(statErr, stats) {
           if (iBufList) {
             ++iCallback.count;
-            xdDiff(!statErr && aPath, aPath+'.w', function(err, diff) {
+            xd.diff(!statErr && aPath, aPath+'.w', function(err, diff) {
               if (err) throw err;
               iBufList.push(diff);
               iDiffList.push({oid:aPt, size:diff.length, type:'part'});
@@ -2558,7 +2526,7 @@ console.log(partlist);
           }
           if (statErr)
             return fInsert(null);
-          xdDiff(aPath+'.w', aPath, function(err, diff) {
+          xd.diff(aPath+'.w', aPath, function(err, diff) {
             if (err) throw err;
             fInsert(diff);
           });
