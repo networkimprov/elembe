@@ -623,7 +623,7 @@ var sServices = {
         iRow.status = 'online';
         sClients.notify(null, {type:'services', list:sServices.list(iRow.host)});
         if (iRow.newreg)
-          iRow.conn.register(sUUId, '', '', iRow.aliases);
+          iRow.conn.register(sUUId, '', iRow.aliases);
         sServices._sendNext(iRow.host);
       } else if (/^reg fail/.test(msg)) {
         iRow.conn.login(sUUId, iRow.nodeid);
@@ -688,7 +688,7 @@ var sServices = {
     var aAddr = iHost.split(':');
     aS.conn.connect(aAddr[0], +aAddr[1] || 80, function() {
       if (aS.joined === 'no')
-        aS.conn.register(sUUId, aS.nodeid, '', aS.aliases);
+        aS.conn.register(sUUId, aS.nodeid, aS.aliases);
       else
         aS.conn.login(sUUId, aS.nodeid);
     });
@@ -745,7 +745,7 @@ var sServices = {
       if (that.s[iHost].status === 'offline')
         that._connect(iHost);
       else if (that.s[iHost].status === 'online')
-        that.s[iHost].conn.register(sUUId, '', '', that.s[iHost].aliases);
+        that.s[iHost].conn.register(sUUId, '', that.s[iHost].aliases);
       sClients.notify(iReq, {type:'services', list:that.list(iHost)});
     });
   };
