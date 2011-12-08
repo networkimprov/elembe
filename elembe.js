@@ -15,6 +15,8 @@ var gm = require('gm');
 var Inotify = require('inotify').Inotify;
 var MqClient = require('mqclient');
 
+fs.ReadStream.prototype.pipe = function(to) { sys.pump(this, to, noOpCallback) };
+
 var kSchema = {
   instance: {
     instance: {
@@ -527,11 +529,8 @@ function httpRequest(req, res) {
               aFile = 'image-invalid.png';
               type = 'PNG';
             }
-            fs.readFile(aFile, function(err, data) {
-              if (err) throw err;
-              res.writeHead(200, {'Content-Type':'image/'+type, 'Cache-Control':'no-store, no-cache'});
-              res.end(data);
-            });
+            res.writeHead(200, {'Content-Type':'image/'+type, 'Cache-Control':'no-store, no-cache'});
+            fs.createReadStream(aFile).pipe(res);
           });
         });
       });
