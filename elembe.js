@@ -113,9 +113,9 @@ function createSchema(iSchema, iFile) {
   return aSql;
 }
 
-function makePath(iOid, iSkipMkdir) {
+function makePath(iOid, _skipMkdir) {
   var aDir = sMainDir + iOid.slice(0, iOid.indexOf('.'));
-  if (!iSkipMkdir) {
+  if (!_skipMkdir) {
     try {
     fs.mkdirSync(aDir, 0711);
     } catch (aErr) {
@@ -2512,7 +2512,7 @@ console.log(partlist);
         if (that.revisionMap.page[aPg].part[aPt].done)
           continue;
         that.revisionMap.page[aPg].part[aPt].done = true;
-        var aPath = getPath(aPt, true);
+        var aPath = getPath(aPt);
         fs.stat(aPath, function(statErr, stats) {
           if (iBufList) {
             ++iCallback.count;
