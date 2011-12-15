@@ -684,8 +684,8 @@ var sServices = {
   sServices._connect = function(iHost) {
     var aS = this.s[iHost];
     aS.status = 'trying';
-    var aAddr = iHost.split(':');
-    aS.conn.connect(aAddr[0], +aAddr[1] || 80, function() {
+    //var aAddr = iHost.split(':');
+    aS.conn.connect(iHost, null, function() {
       if (aS.joined === 'no')
         aS.conn.register(sUUId, aS.nodeid, aS.aliases);
       else
