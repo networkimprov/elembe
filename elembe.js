@@ -716,17 +716,8 @@ var sServices = {
     sServices._sendNext(iHost);
   };
 
-  sServices.touch = function(iHost, iAliases, iComment, iReq) {
+  sServices.touch = function(iHost, iAliases, iComment, iReq, _tx) {
     var that = this;
-    if (!(iHost in this.s)) {
-      var aNodeId = uuid.generate();
-      that.db.exec("INSERT INTO service VALUES ('"+iHost+"', '"+aNodeId+"', 'no', NULL, NULL, 2)", noOpCallback, function() {
-        that._create({ host:iHost, nodeid:aNodeId, joined:'no', aliases:null, comment:null, newreg:2 }, function(svc) {
-          that.touch(iHost, iAliases, iComment, iReq);
-        });
-      });
-      return;
-    }
     if (!that.stmtSave) {
       that.db.prepare("UPDATE service SET newreg=?, aliases=?, comment=? WHERE host = ?", function(err, stmt) {
         if (err) throw err;
@@ -735,17 +726,33 @@ var sServices = {
       });
       return;
     }
-    that.stmtSave.bind(1, this.s[iHost].newreg = +(this.s[iHost].newreg !== 2));
+    if (!(iHost in this.s)) {
+      var aNodeId = uuid.generate();
+      that.db.exec("BEGIN TRANSACTION;\
+                    INSERT INTO service VALUES ('"+iHost+"', '"+aNodeId+"', 'no', NULL, NULL, 2);", noOpCallback, function() {
+        that._create({ host:iHost, nodeid:aNodeId, joined:'no', aliases:null, comment:null, newreg:2 }, function(svc) {
+          that.touch(iHost, iAliases, iComment, iReq, true);
+        });
+      });
+      return;
+    }
+    that.stmtSave.bind(1, this.s[iHost].newreg || (this.s[iHost].newreg = 1));
     that.stmtSave.bind(2, this.s[iHost].aliases = iAliases);
     that.stmtSave.bind(3, this.s[iHost].comment = iComment);
     that.stmtSave.bind(4, this.s[iHost].host);
     that.stmtSave.stepOnce(function(err, row) {
       if (err) throw err;
-      if (that.s[iHost].status === 'offline')
-        that._connect(iHost);
-      else if (that.s[iHost].status === 'online')
-        that.s[iHost].conn.register(sUUId, '', that.s[iHost].aliases);
-      sClients.notify(iReq, {type:'services', list:that.list(iHost)});
+      if (_tx)
+        that.db.exec("COMMIT TRANSACTION", noOpCallback, fDone);
+      else
+        fDone();
+      function fDone() {
+        if (that.s[iHost].status === 'offline')
+          that._connect(iHost);
+        else if (that.s[iHost].status === 'online')
+          that.s[iHost].conn.register(sUUId, '', that.s[iHost].aliases);
+        sClients.notify(iReq, {type:'services', list:that.list(iHost)});
+      }
     });
   };
 
