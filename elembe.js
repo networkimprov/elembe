@@ -15,12 +15,15 @@ var gm = require('gm');
 var Inotify = require('inotify').Inotify;
 var MqClient = require('mqclient');
 
-fs.ReadStream.prototype.pipe = function(to) { sys.pump(this, to, noOpCallback) };
+http.IncomingMessage.prototype.pipe = 
+fs.ReadStream.prototype.pipe = 
+  function(to) { sys.pump(this, to, noOpCallback) };
 
 var kSchema = {
   instance: {
     instance: {
       uuid: 'text',
+      offset: 'integer',
       rowid: 'integer primary key autoincrement, check (uuid IS NULL OR rowid = 1)'
     }
   },
@@ -31,7 +34,8 @@ var kSchema = {
       joined: 'text',
       aliases: 'text', // json [ string, ... ]
       comment: 'text',
-      newreg: 'integer'
+      newreg: 'integer',
+      addnode: 'text'
     }
   },
   projects: {
@@ -57,19 +61,12 @@ var kSchema = {
       client: 'text unique',    // mac addr
       data: 'text'   // json { ... }
     }
-  },
-  partmap: {
-    partmap: {
-      part: 'text',      // oid of object in external file
-      page: 'text',      // oid of page in project
-      project: 'text'    // oid of project
-    }
   }
 };
 
 var kIncrOid = "INSERT INTO instance.instance (uuid) VALUES (NULL);\
                 DELETE FROM instance.instance WHERE rowid = last_insert_rowid()";
-var kNewOid = "SELECT uuid || '.' || last_insert_rowid() AS oid FROM instance.instance";
+var kNewOid = "SELECT uuid || '.' || (last_insert_rowid() * 100 + offset) AS oid FROM instance.instance";
 
 function areEqual(iA, iB) {
   if (iA.constructor !== iB.constructor)
@@ -432,7 +429,7 @@ function main() {
   aDb.open(sMainDir+'instance', function (openErr) {
     if (openErr) throw openErr;
     var aSchemaSql = createSchema(kSchema);
-    aSchemaSql += aAutogen ? "INSERT INTO instance (uuid) VALUES ('"+uuid.generate()+"');" : "SELECT uuid FROM instance;";
+    aSchemaSql += aAutogen ? "INSERT INTO instance (uuid, offset) VALUES ('"+uuid.generate()+"', 0);" : "SELECT uuid FROM instance;";
     aDb.exec(aSchemaSql, function(err, row) {
       if (err) throw err;
       if (row) sUUId = row.uuid;
@@ -491,13 +488,30 @@ var kFileMap = {
   '/socket-io.js':'socket.io/socket.io.js',
   '/applaunch':'client/applaunch.xpi',
   '/test':'dbtest.html',
-  '/part':''
+  '/part':'part',
+  '/sync':'sync'
 };
 var kTypeMap = { js:'text/javascript', css:'text/css', html:'text/html', xpi:'application/x-xpinstall' };
 
 function httpRequest(req, res) {
   var aUrl = url.parse(req.url, true), aFile = kFileMap[aUrl.pathname];
-  if (aFile === '') {
+  if (aFile === 'sync') {
+    if (aUrl.query.file) {
+      var aPath = sProjects._syncGetPath(aUrl.query.file);
+      fs.stat(aPath, function(err, stats) {
+        if (err && err.errno !== process.ENOENT) throw err;
+        if (stats) {
+          res.writeHead(200, { 'Content-Length':stats.size });
+          fs.createReadStream(aPath).pipe(res);
+        } else {
+          res.writeHead(400);
+          res.end();
+        }
+      });
+    } else {
+      queueRequest({type:'syncTo', client:null, nodeid:aUrl.query.nodeid, done:aUrl.query.done, response:res});
+    }
+  } else if (aFile === 'part') {
     if (req.method.toLowerCase() === 'post') {
       req.setEncoding('binary');
       var aBuf = new Buffer(+req.headers['content-length']);
@@ -578,7 +592,7 @@ var sServices = {
   sServices.end = function() {
     //. queue disconnect if conn in use
     for (var a in this.s) {
-      if (this.s[a].status !== 'offline' && this.s[a].status !== '?') {
+      if (this.s[a].status !== 'offline') {
         this.s[a].status = 'signing off';
         sClients.notify(null, {type:'services', list:this.list(a)});
         this.s[a].conn.close();
@@ -603,19 +617,50 @@ var sServices = {
     iRow.msgHead = null;
     iRow.status = 'offline';
     iRow.conn = new MqClient();
-    iRow.conn.on('registered', function(aliases) {
+    iRow.conn.on('registered', function(aliases, err) {
+      if (err && err !== 'user exists')
+        throw new Error(err);
       if (aliases !== undefined)
         iRow.aliases = aliases;
       var aJoined = '';
       if (iRow.joined === 'no') {
         iRow.joined = (new Date).toISOString();
         aJoined = ",joined='"+iRow.joined+"'";
-        iRow.conn.login(sUUId, iRow.nodeid);
+      }
+      if (iRow.status === 'trying') {
+        if (iRow.addnode) {
+          var aId = sServices._nodeIds(iRow.host);
+          iRow.conn.addNode(sUUId, aId.add, aId.reg);
+        } else {
+          iRow.conn.login(sUUId, iRow.nodeid);
+        }
       }
       iRow.newreg = 0;
       sServices.db.exec("UPDATE service SET newreg=0, aliases='"+iRow.aliases+"'"+aJoined+" WHERE host='"+iRow.host+"'", noOpCallback, function() {
         sClients.notify(null, {type:'services', list:sServices.list(iRow.host)});
       });
+    });
+    iRow.conn.on('added', function(offset, err) {
+      if (err && err !== 'new nodename exists')
+        throw new Error(err);
+      if (iRow.status === 'trying')
+        iRow.conn.login(sUUId, iRow.nodeid);
+      if (typeof iRow.addnodeCallback === 'function')
+        iRow.addnodeCallback(offset);
+      else if (iRow.addnodeCallback === 'saving')
+        iRow.addnodeCallback = fClear;
+      else
+        fClear(iRow.addnode.charAt(0) === '!');
+      iRow.addnode = null;
+      function fClear(isNew) {
+        var a1 = "ATTACH 'instance' AS instance; \
+                  BEGIN TRANSACTION; \
+                  UPDATE instance.instance SET offset = '"+offset+"';";
+        var a2 = "UPDATE service SET addnode = NULL WHERE host = '"+iRow.host+"';";
+        var a3 = "COMMIT TRANSACTION; \
+                  DETACH instance;";
+        sServices.db.exec((isNew ? a1 : '') + a2 + (isNew ? a3 : ''), noOpCallback, noOpCallback);
+      }
     });
     iRow.conn.on('info', function(msg) {
       if (msg === 'ok login') {
@@ -624,8 +669,6 @@ var sServices = {
         if (iRow.newreg)
           iRow.conn.register(sUUId, '', iRow.aliases);
         sServices._sendNext(iRow.host);
-      } else if (/^reg fail/.test(msg)) {
-        iRow.conn.login(sUUId, iRow.nodeid);
       }
     });
     iRow.conn.on('quit', function(msg) {
@@ -668,7 +711,7 @@ var sServices = {
       }
     });
     iRow.conn.on('close', function() {
-      iRow.status = 'offline';
+      iRow.status = iRow.status === 'signing off' ? 'offline' : 'trying';
       if (iRow.timer) {
         clearTimeout(iRow.timer);
         iRow.timer = null;
@@ -686,11 +729,20 @@ var sServices = {
     aS.status = 'trying';
     //var aAddr = iHost.split(':');
     aS.conn.connect(iHost, null, function() {
+      var aId = sServices._nodeIds(iHost);
       if (aS.joined === 'no')
-        aS.conn.register(sUUId, aS.nodeid, aS.aliases);
+        aS.conn.register(sUUId, aId.reg, aS.aliases);
+      else if (aS.addnode)
+        aS.conn.addNode(sUUId, aId.add, aId.reg);
       else
         aS.conn.login(sUUId, aS.nodeid);
     });
+  };
+
+  sServices._nodeIds = function(iHost) {
+    var aS = this.s[iHost];
+    var aIsOrig = !aS.addnode || aS.addnode.charAt(0) !== '!';
+    return { reg: aIsOrig ? aS.nodeid : aS.addnode.slice(1), add: aIsOrig ? aS.addnode : aS.nodeid };
   };
 
   sServices._sendNext = function(iHost) {
@@ -729,8 +781,8 @@ var sServices = {
     if (!(iHost in this.s)) {
       var aNodeId = uuid.generate();
       that.db.exec("BEGIN TRANSACTION;\
-                    INSERT INTO service VALUES ('"+iHost+"', '"+aNodeId+"', 'no', NULL, NULL, 2);", noOpCallback, function() {
-        that._create({ host:iHost, nodeid:aNodeId, joined:'no', aliases:null, comment:null, newreg:2 }, function(svc) {
+                    INSERT INTO service VALUES ('"+iHost+"', '"+aNodeId+"', 'no', NULL, NULL, 2, NULL);", noOpCallback, function() {
+        that._create({ host:iHost, nodeid:aNodeId, joined:'no', aliases:null, comment:null, newreg:2, addnode:null }, function(svc) {
           that.touch(iHost, iAliases, iComment, iReq, true);
         });
       });
@@ -754,6 +806,26 @@ var sServices = {
         sClients.notify(iReq, {type:'services', list:that.list(iHost)});
       }
     });
+  };
+
+  sServices.addNode = function(iHost, iNodeId, iCallback) {
+    var that = this;
+    that.s[iHost].addnode = iNodeId;
+    that.s[iHost].conn.addNode(sUUId, iNodeId, that.s[iHost].nodeid);
+    var aTimer = setTimeout(function() {
+      that.s[iHost].addnodeCallback = 'saving';
+      that.db.exec("UPDATE service SET addnode = '"+iNodeId+"' WHERE host = '"+iHost+"'", noOpCallback, function() {
+        if (typeof that.s[iHost].addnodeCallback === 'function')
+          that.s[iHost].addnodeCallback();
+        that.s[iHost].addnodeCallback = null;
+        iCallback(false);
+      });
+    }, 2*1000);
+    that.s[iHost].addnodeCallback = function(offset) {
+      clearTimeout(aTimer);
+      that.s[iHost].addnodeCallback = null;
+      iCallback(true, offset);
+    };
   };
 
   sServices.list = function(iHost) {
@@ -1276,6 +1348,191 @@ var sProjects = {
         iCallback(row && row.accept ? 'invite' : null);
       });
     });
+  };
+
+  sProjects._syncMakePath = function(iName, _skipMkdir) {
+    return /^#/.test(iName) || iName.indexOf('.') < 0 ? sMainDir+iName : makePath(iName, _skipMkdir);
+  };
+
+  sProjects._syncGetPath = function(iName) { return this._syncMakePath(iName, true) };
+
+  sProjects.syncFrom = { ssid:true, password:true, host:true };
+  sProjects.handle_syncFrom = function(iReq) {
+    //. connect to ssid
+    var aHost = iReq.host.split(':');
+    var aHttp = http.createClient(+aHost[1] || 80, aHost[0]);
+    var aHeader = { /*'Connection':'keep-alive',*/ 'Content-Length':0 };
+    var aRename = { 'clients':1, 'projects':1 };
+    try {
+    var aNodeInfo = fs.readFileSync(sMainDir+'sync_filelist', 'ascii');
+    } catch (err) {
+      if (err.errno !== process.ENOENT) throw err;
+    }
+    if (!aNodeInfo) {
+      var aHtReq = aHttp.request('GET', '/sync?nodeid='+sUUId, aHeader);
+      aHtReq.end();
+      console.log('sent newNode request');
+      aHtReq.on('response', function(aResp) {
+        //.sClients.notify()
+        aResp.setEncoding('ascii');
+        aNodeInfo = '';
+        aResp.on('data', function(aData) { aNodeInfo += aData.toString() });
+        aResp.on('end', function() {
+          fs.writeFileSync(sMainDir+'sync_filelist', aNodeInfo);
+          fGet(0);
+        });
+      });
+    } else {
+      fGet(0);
+    }
+    function fGet(idx) {
+      if (idx === 0) {
+        aNodeInfo = JSON.parse(aNodeInfo);
+        //.sClients.notify(aNodeInfo.size);
+      }
+      for (var aAlreadySent = 0; idx < aNodeInfo.list.length; ++idx) {
+        var aFile = sProjects._syncMakePath(aNodeInfo.list[idx] in aRename ? 'sync_'+aNodeInfo.list[idx] : aNodeInfo.list[idx]);
+        try {
+          aAlreadySent += fs.statSync(aFile).size;
+        } catch (err) {
+          if (err.errno !== process.ENOENT) throw err;
+          break;
+        }
+      }
+      if (aAlreadySent)
+        ;//.sClients.notify();
+      var aHttp = http.createClient(+aHost[1] || 80, aHost[0]);
+      if (idx < aNodeInfo.list.length) {
+        console.log('request file '+aNodeInfo.list[idx]);
+        var aHtReq = aHttp.request('GET', '/sync?nodeid='+sUUId+'&file='+encodeURIComponent(aNodeInfo.list[idx]), aHeader);
+        aHtReq.end();
+        aHtReq.on('response', function(aResp) {
+          console.log('start recv '+aFile+' '+aResp.headers['content-length']);
+          if (aResp.statusCode !== 200) {
+            fGet(idx+1);
+            return;
+          }
+          var aStream = fs.createWriteStream(aFile+'-sync');
+          aResp.pipe(aStream);
+          aStream.on('close', function() {
+            console.log('receive file '+aFile);
+            syncFile(aFile+'-sync', fRename);
+            syncFile(getParent(aFile), fRename);
+            var aCount = 2;
+            fGet(idx+1);
+            function fRename(err) {
+              if (err) throw err;
+              if (--aCount === 0)
+                fs.rename(aFile+'-sync', aFile, function(err) {
+                  if (err) throw err;
+                  aResp.headers['content-length']; //. sClients.notify()
+                });
+            }
+          });
+        });
+        return;
+      }
+      aHtReq = aHttp.request('GET', '/sync?nodeid='+sUUId+'&done=1', { 'Content-Length':0 });
+      aHtReq.end();
+      aHtReq.on('response', function(aResp) {
+        fs.unlink(sMainDir+'sync_filelist');
+        sClients.respond(iReq, { status:'ok' });
+      });
+    }
+  };
+
+  sProjects.syncTo = { nodeid:true, done:true };
+  sProjects.handle_syncTo = function(iReq) {
+    console.log('syncTo '+iReq.nodeid+', done '+iReq.done);
+    if (iReq.done) {
+      fs.unlink(sMainDir+'sync_services', fDone);
+      fs.unlink(sMainDir+'sync_instance', fDone);
+      var aCount = 2;
+      function fDone(err) {
+        if (err && err.errno !== process.ENOENT) throw err;
+        if (--aCount === 0)
+          syncFile(sMainDir, function(err) {
+            if (err) throw err;
+            sClients.respond(iReq, { status:'ok' });
+          });
+      }
+      return;
+    }
+    var aDb = new sqlite.Database();
+    try {
+    var aStat = fs.statSync('sync_services');
+    } catch (err) {
+      if (err.errno !== process.ENOENT) throw err;
+    }
+    if (!aStat) {
+      dupFile(sMainDir+'services', sMainDir+'sync_services-tmp', function(err) {
+        if (err) throw err;
+        aDb.open(sMainDir+'sync_services-tmp', function(err) {
+          if (err) throw err;
+          var aSql = createSchema({sync_instance:kSchema.instance}) +"\
+                     BEGIN TRANSACTION; \
+                     INSERT OR IGNORE INTO instance (uuid) VALUES ('"+sUUId+"'); ";
+          for (var aSvc in sServices.s)
+            aSql += "UPDATE service SET addnode = '!'||nodeid, nodeid = '"+uuid.generate()+"' WHERE host = '"+aSvc+"';";
+          aSql   += "COMMIT TRANSACTION; ";
+          aDb.exec(aSql, noOpCallback, function() {
+            aDb.close();
+            fs.renameSync(sMainDir+'sync_services-tmp', sMainDir+'sync_services');
+            fAddNodes();
+          });
+        });
+      });
+    } else {
+      fAddNodes();
+    }
+    function fAddNodes() {
+      aDb.open(sMainDir+'sync_services', function(err) {
+        if (err) throw err;
+        var aNodeId = {};
+        aDb.exec("SELECT addnode, host, nodeid FROM service; \
+                  ATTACH '"+sMainDir+"instance' AS instance; \
+                  BEGIN TRANSACTION; ", function(err, row) {
+          if (err) throw err;
+          if (row && row.addnode) aNodeId[row.host] = row.nodeid;
+        }, fIter);
+        function fIter() {
+          for (var aSvc in aNodeId) {
+            sServices.addNode(aSvc, aNodeId[aSvc], function(done, offset) {
+              if (!done)
+                return fIter();
+              var aSql = "UPDATE service SET addnode = NULL WHERE host = '"+aSvc+"';";
+              if (offset)
+                aSql += "UPDATE instance SET offset = '"+offset+"';";
+              aDb.exec(aSql, noOpCallback, fIter);
+            });
+            delete aNodeId[aSvc];
+            return;
+          }
+          aDb.exec("COMMIT TRANSACTION", noOpCallback, function() {
+            aDb.close();
+            var aData = { size:0, list:[] };
+            var aOmit = { 'instance':1, 'services':1, '#autogen':1, '#editcache':1, '#revisioncache':1 };
+            fReadDir('');
+            sClients.respond(iReq, { status:JSON.stringify(aData) });
+            function fReadDir(path, type) {
+              var aList = fs.readdirSync(sMainDir+path);
+              for (var a=0; a < aList.length; ++a) {
+                if (!type && aList[a] in aOmit)
+                  continue;
+                var aStats = fs.statSync(sMainDir+path+aList[a]);
+                if (aStats.isFile()) {
+                  aData.size += aStats.size;
+                  aData.list.push((type === 'file' ? '' : path)+aList[a]);
+                } else if (aStats.isDirectory()) {
+                  var aType = type === '#' || /^#/.test(aList[a]) ? '#' : 'file';
+                  fReadDir(path+aList[a]+'/', aType);
+                }
+              }
+            }
+          });
+        }
+      });
+    }
   };
 
 
@@ -2804,7 +3061,7 @@ var sClients = {
 
   sClients.respond = function(iReq, iData, iNoContinue) {//. avoid overlap in iData members and response members
     if (iReq.response) {
-      iReq.response.writeHead(200);
+      iReq.response.writeHead(200, { 'Content-Length':(iData.error || iData.status || '').length });
       iReq.response.end(iData.error || iData.status);
     } else if (iReq.client) {
       if (!iData.id)
