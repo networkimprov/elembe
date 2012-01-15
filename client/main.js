@@ -412,13 +412,14 @@ suae.pMgr = {
         return;
       }
 
+      that.pgInit();
+      suae.menus.welcome = null; //. other cleanup necessary?
       that.projIndex = new suae.Index('name', {name:'+str', created:'-str'});
       that.menuTmpl = suae.menus.page.getWidgetByName('pages');
       //.this.userIndex = suae.read('userindex');
 
       that.navState = that.navUpdate.data = jso.data;
 
-      that.pgInit();
       suae.request({type:'getList'}, function(jso) {
         for (var a=0; a < jso.list.length; ++a)
           that.projIndex.add(jso.list[a].oid, jso.list[a].data);
