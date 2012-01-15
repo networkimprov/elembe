@@ -186,11 +186,6 @@ function syncFile(iPath, iCallback) {
 function RecordPlayback(iType, iFile) {
   try {
   this.fd = fs.openSync(iFile, iType === 'record' ? 'a' : 'r', 0600);
-  if (iType === 'record' && fs.fstatSync(this.fd).size === 0) {
-    var aStr = JSON.stringify({__uuid__:sUUId});
-    var aBuf = new Buffer((aStr.length.toString(16)+'   ').slice(0,4) + aStr);
-    fs.writeSync(this.fd, aBuf, 0, aBuf.length, null);
-  }
   } catch (err) {
     this.error = 'RecordPlayback '+iFile+' error: '+err.message;
     return;
@@ -240,15 +235,6 @@ function RecordPlayback(iType, iFile) {
       }
       return value;
     });
-    if (aReq.__uuid__) {
-      sUUId = aReq.__uuid__;
-      sProjects.db.exec("UPDATE instance.instance SET uuid = '"+aReq.__uuid__+"'", noOpCallback, function() {
-        aReq = that.next();
-        if (aReq)
-          queueRequest(aReq); //. should use sync dbExec, so this is done by caller
-      });
-      return;
-    }
     console.log(aReq.type);
     aReq.client = null;
     return aReq;
@@ -293,9 +279,8 @@ function Queue() {
       aQ.next();
     var aReq = aQ.curr();
     if (!aReq) {
-      aReq = sPlayback && sPlayback.next();
-      if (aReq)
-        queueRequest(aReq);
+      if (sPlayback)
+        queueRequest(sPlayback.next());
       return;
     }
     if (aReq.project && !Project.list[aReq.project]) {
@@ -374,6 +359,7 @@ function Queue() {
     }
   }
 
+var sWelcome;
 var sMainDir = 'data/';
 var sRevisionCache = '#revisioncache/';
 var sEditCache = '#editcache/';
@@ -385,15 +371,13 @@ var sRecord = null;
 var sPlayback = null;
 
 function main() {
-  var aAutogen;
-  function fExcluded() { return aAutogen || sRecord || sPlayback ? true : false }
+  function fExcluded() { return sRecord || sPlayback ? true : false }
   for (var a=2; a < process.argv.length; ++a) {
     switch (process.argv[a]) {
-    case 'autogen':       if (!fExcluded()) aAutogen  = true;            break;
     case 'record':   ++a; if (!fExcluded()) sRecord   = process.argv[a]; break;
     case 'playback': ++a; if (!fExcluded()) sPlayback = process.argv[a]; break;
     case 'alt':
-      sMainDir = 'data-'+process.argv[++a]+'/';
+      sMainDir = sMainDir.replace('/', '-'+process.argv[++a]+'/');
       sHttpPort = +process.argv[++a];
       break;
     default:
@@ -407,80 +391,101 @@ function main() {
   sSendDir       = sMainDir+sSendDir;
   sInbound       = sMainDir+sInbound;
 
-  if (aAutogen) {
-    var aMask = process.umask(0000);
-    try {
-    fs.mkdirSync(sMainDir, 0711);
-    } catch (err) {
-      if (err.errno !== process.EEXIST) throw err;
-      console.log("can't autogen over existing data");
+  if (sRecord || sPlayback) {
+    var aRp = new RecordPlayback(sRecord ? 'record' : 'playback', sRecord || sPlayback);
+    if (aRp.error) {
+      console.log(aRp.error);
       return;
     }
-    fs.mkdirSync(sRevisionCache, 0777);
-    fs.mkdirSync(sEditCache, 0777);
-    fs.mkdirSync(sSendDir, 0711);
-    fs.mkdirSync(sInbound, 0777);
-    process.umask(aMask);
-  } else {
-    sAttachments.init();
+    if (sRecord) sRecord = aRp;
+    if (sPlayback) sPlayback = aRp;
   }
+  startDatabase(function() {
+    sProjects.queue.next();
+    if (sPlayback) {
+      queueRequest(sPlayback.next());
+      return;
+    }
+    aServer = http.createServer(httpRequest);
+    aServer.listen(sHttpPort);
+    var aSocket = io.listen(aServer);
+    aSocket.on('connection', function(conn) {
+      var aClientId = conn.request.headers.cookie.slice(conn.request.headers.cookie.indexOf('=')+1);
+      sClients.client(aClientId, conn);
+      var aOn = true;
+      conn.on('message', function(msg) {
+        if (!aOn) {
+          console.log('message received on closed connection');
+          return;
+        }
+        var aReq = JSON.parse(msg);
+        aReq.client = aClientId;
+        if (sWelcome && aReq.type !== 'autogen' && aReq.type !== 'syncFrom')
+          sClients.respond(aReq, {type:'welcome', state:sWelcome, host:(sProjects.syncFromData && sProjects.syncFromData.host)}, true);
+        else
+          queueRequest(aReq);
+      });
+      conn.on('disconnect', function() {
+        aOn = false;
+        sClients.client(aClientId, null);
+      });
+    });
+  });
+}
 
+function startDatabase(iCallback) {
+  try {
+  var aMain = fs.statSync(sMainDir);
+  sProjects.syncFromData = JSON.parse(fs.readFileSync(sMainDir+'sync_filelist', 'ascii'));
+  sWelcome = 'syncPause';
+  } catch (err) {
+    if (err.errno !== process.ENOENT) throw err;
+    sWelcome = aMain ? null : 'new';
+  }
+  if (sWelcome) {
+    process.nextTick(iCallback);
+    return;
+  }
   var aDb = new sqlite.Database();
-  aDb.open(sMainDir+'instance', function (openErr) {
-    if (openErr) throw openErr;
-    var aSchemaSql = createSchema(kSchema);
-    aSchemaSql += aAutogen ? "INSERT INTO instance (uuid, offset) VALUES ('"+uuid.generate()+"', 0);" : "SELECT uuid FROM instance;";
-    aDb.exec(aSchemaSql, function(err, row) {
+  aDb.open(sMainDir+'instance', function (err) {
+    if (err) throw err;
+    aDb.exec("SELECT uuid FROM instance", function(err, row) {
       if (err) throw err;
       if (row) sUUId = row.uuid;
     }, function() {
       aDb.close();
-      if (sRecord || sPlayback) {
-        var aRp = new RecordPlayback(sRecord ? 'record' : 'playback', sRecord || sPlayback);
-        if (aRp.error) {
-          console.log(aRp.error);
-          return;
-        }
-        if (sRecord) sRecord = aRp;
-        if (sPlayback) sPlayback = aRp;
-      }
+      sAttachments.init();
       sProjects.init(function() {
-        if (aAutogen) {
-          sProjects.autogen(require('./autogen'), function() {
-            console.log('autogen complete');
-            sProjects.finalize();
-          });
-          return;
-        }
         sServices.start();
-        if (sPlayback) {
-          sPlayback.next();
-          return;
-        }
-        aServer = http.createServer(httpRequest);
-        aServer.listen(sHttpPort);
-        var aSocket = io.listen(aServer);
-        aSocket.on('connection', function(conn) {
-          var aClientId = conn.request.headers.cookie.slice(conn.request.headers.cookie.indexOf('=')+1);
-          sClients.client(aClientId, conn);
-          var aOn = true;
-          conn.on('message', function(msg) {
-            if (!aOn) {
-              console.log('message received on closed connection');
-              return;
-            }
-            var aReq = JSON.parse(msg);
-            aReq.client = aClientId;
-            queueRequest(aReq);
-          });
-          conn.on('disconnect', function() {
-            aOn = false;
-            sClients.client(aClientId, null);
-          });
-        });
+        iCallback();
       });
     });
   });
+}
+
+function beginDirectories() {
+  var aList = [ 0711, sMainDir, sSendDir, sInbound, 0777, sEditCache, sRevisionCache ];
+  var aMask = process.umask(0000);
+  for (var a=0; a < aList.length; ++a) {
+    if (typeof aList[a] === 'number') {
+      var aMode = aList[a];
+      continue;
+    }
+    aList[a] = aList[a].replace(sMainDir.slice(0,-1), '$&_tmp');
+    try {
+    fs.mkdirSync(aList[a], aMode);
+    } catch (err) {
+      if (err.errno !== process.EEXIST) throw err;
+    }
+  }
+  process.umask(aMask);
+  sMainDir = aList[1];
+}
+
+function commitDirectories() {
+  var aMain = sMainDir.replace('_tmp', '');
+  fs.renameSync(sMainDir, aMain);
+  sMainDir = aMain;
 }
 
 var kFileMap = {
@@ -583,7 +588,7 @@ var sServices = {
         if (row)
           that._create(row, function(svc) {
             that._connect(svc.host);
-            sClients.notify(null, {type:'services', list:that.list(svc.host)});
+            sClients.notify(null, {type:'services', list:that.list(svc.host)}, '#services');
           });
       }, noOpCallback);
     });
@@ -594,7 +599,7 @@ var sServices = {
     for (var a in this.s) {
       if (this.s[a].status !== 'offline') {
         this.s[a].status = 'signing off';
-        sClients.notify(null, {type:'services', list:this.list(a)});
+        sClients.notify(null, {type:'services', list:this.list(a)}, '#services');
         this.s[a].conn.close();
       }
     }
@@ -637,7 +642,7 @@ var sServices = {
       }
       iRow.newreg = 0;
       sServices.db.exec("UPDATE service SET newreg=0, aliases='"+iRow.aliases+"'"+aJoined+" WHERE host='"+iRow.host+"'", noOpCallback, function() {
-        sClients.notify(null, {type:'services', list:sServices.list(iRow.host)});
+        sClients.notify(null, {type:'services', list:sServices.list(iRow.host)}, '#services');
       });
     });
     iRow.conn.on('added', function(offset, err) {
@@ -665,7 +670,7 @@ var sServices = {
     iRow.conn.on('info', function(msg) {
       if (msg === 'ok login') {
         iRow.status = 'online';
-        sClients.notify(null, {type:'services', list:sServices.list(iRow.host)});
+        sClients.notify(null, {type:'services', list:sServices.list(iRow.host)}, '#services');
         if (iRow.newreg)
           iRow.conn.register(sUUId, '', iRow.aliases);
         sServices._sendNext(iRow.host);
@@ -675,7 +680,7 @@ var sServices = {
       if (iRow.timer)
         clearTimeout(iRow.timer);
       iRow.status = 'quit: '+msg;
-      sClients.notify(null, {type:'services', list:sServices.list(iRow.host)});
+      sClients.notify(null, {type:'services', list:sServices.list(iRow.host)}, '#services');
       console.log('service quit: '+iRow.host+' '+msg);
     });
     iRow.conn.on('deliver', function(id, from, msg, etc) {
@@ -716,7 +721,7 @@ var sServices = {
         clearTimeout(iRow.timer);
         iRow.timer = null;
       }
-      sClients.notify(null, {type:'services', list:sServices.list(iRow.host)});
+      sClients.notify(null, {type:'services', list:sServices.list(iRow.host)}, '#services');
     });
     iRow.conn.on('error', function(err) {
       console.log('invalid message from service '+iRow.host+': '+err.message);
@@ -803,7 +808,7 @@ var sServices = {
           that._connect(iHost);
         else if (that.s[iHost].status === 'online')
           that.s[iHost].conn.register(sUUId, '', that.s[iHost].aliases);
-        sClients.notify(iReq, {type:'services', list:that.list(iHost)});
+        sClients.notify(iReq, {type:'services', list:that.list(iHost)}, '#services');
       }
     });
   };
@@ -1027,10 +1032,7 @@ var sProjects = {
     that.db = new sqlite.Database();
     that.db.open(sMainDir+'projects', function(openErr) {
       if (openErr) throw openErr;
-      that.db.exec("ATTACH '"+sMainDir+"instance' AS instance; ATTACH '"+sMainDir+"clients' AS clients;", noOpCallback, function() {
-        that.queue.next();
-        iStart();
-      });
+      that.db.exec("ATTACH '"+sMainDir+"instance' AS instance; ATTACH '"+sMainDir+"clients' AS clients;", noOpCallback, iStart);
     });
   };
 
@@ -1080,48 +1082,74 @@ var sProjects = {
     });
   };
 
-  sProjects.autogen = function(iJso, iCallback, _n) {
-    if (typeof _n === 'undefined')
-      _n = 0;
-    if (_n === iJso.length)
-      return iCallback();
-    sProjects.db.exec("INSERT INTO project (oid, data, localData) VALUES ( '"+iJso[_n].project+"', '"+JSON.stringify(iJso[_n].data)+"', '{}' )", noOpCallback, function() {
-      var aPath = makePath(iJso[_n].project);
-      var aDb = new sqlite.Database();
-      aDb.open(aPath, function(err) {
-        if (err) throw err;
-        var aSql = createSchema(Project.prototype.kSchema, aPath) + "BEGIN TRANSACTION;";
-        aDb.exec(aSql, noOpCallback, function() {
-          fDataLoop(iJso[_n].list, 0);
-        });
+  sProjects.autogen = { };
+  sProjects.handle_autogen = function(iReq) {
+    if (sWelcome !== 'new') {
+      sClients.respond(iReq, {error:'cannot autogen from welcome state '+sWelcome});
+      return;
+    }
+    sWelcome = 'autogen';
+    beginDirectories();
+    var aDb = new sqlite.Database();
+    aDb.open(sMainDir+'instance', function (err) {
+      if (err) throw err;
+      var aSql = createSchema(kSchema) +
+                "INSERT OR IGNORE INTO instance (uuid, offset) VALUES ('"+uuid.generate()+"', 0);";
+      aDb.exec(aSql, noOpCallback, function() {
+        aDb.close();
+        fProject(0);
       });
+    });
+    var aJso = require('./autogen.js');
+    function fProject(idx) {
+      if (idx < aJso.length) {
+        var aPath = makePath(aJso[idx].project);
+        aDb.open(aPath, function(err) {
+          if (err) throw err;
+          var aStart = 0;
+          var aSql = createSchema(Project.prototype.kSchema, aPath) +
+                    "BEGIN TRANSACTION; \
+                     INSERT OR IGNORE INTO projects.project (oid, data, localData) VALUES ( '"+aJso[idx].project+"', '"+JSON.stringify(aJso[idx].data)+"', '{}' ); ";
+          aDb.exec(aSql, function(err, row) {
+            if (err && err.message !== 'constraint failed') throw err;
+            if (err) aStart = aJso[idx].list.length;
+          }, function() {
+            fDataLoop(aJso[idx].list, aStart);
+          });
+        });
+      } else {
+        commitDirectories();
+        startDatabase(function() {
+          sClients.notify(iReq, {type:'autogen'});
+        });
+      }
       function fDataLoop(dataArray, dataN) {
-        if (dataN === dataArray.length) {
+        if (dataN < dataArray.length) {
+          switch(dataArray[dataN].type) {
+          case 'page':
+            aDb.exec("INSERT OR IGNORE INTO page (oid, data, layout) VALUES \
+              ('"+dataArray[dataN].oid+"', '"+JSON.stringify(dataArray[dataN].data)+"', '"+JSON.stringify(dataArray[dataN].layout)+"')"
+              , noOpCallback, function() {
+              fDataLoop(dataArray, ++dataN);
+            });
+            return;
+          case 'part':
+            fs.writeFile(makePath(dataArray[dataN].oid), dataArray[dataN].data, 'utf8', function(err) {
+              if (err) throw err;
+              fDataLoop(dataArray, ++dataN);
+            });
+            return;
+          default:
+            throw new Error('unknown autogen type: '+dataArray[dataN].type);
+          }
+        } else {
           aDb.exec("COMMIT TRANSACTION", noOpCallback, function() {
             aDb.close();
-            sProjects.autogen(iJso, iCallback, ++_n);
+            fProject(++idx);
           });
-          return;
-        }
-        switch(dataArray[dataN].type) {
-        case 'page':
-          aDb.exec("INSERT INTO page (oid, data, layout) VALUES \
-            ('"+dataArray[dataN].oid+"', '"+JSON.stringify(dataArray[dataN].data)+"', '"+JSON.stringify(dataArray[dataN].layout)+"')"
-            , noOpCallback, function() {
-            fDataLoop(dataArray, ++dataN);
-          });
-          return;
-        case 'part':
-          fs.writeFile(makePath(dataArray[dataN].oid), dataArray[dataN].data, 'utf8', function(err) {
-            if (err) throw err;
-            fDataLoop(dataArray, ++dataN);
-          });
-          return;
-        default:
-          throw new Error('unknown autogen type: '+dataArray[dataN].type);
         }
       }
-    });
+    }
   };
 
   sProjects.importt = { from:true, jso:true, data:true };
@@ -1316,6 +1344,7 @@ var sProjects = {
 
   sProjects.subscribeServices = {};
   sProjects.handle_subscribeServices = function(iReq) {
+    sClients.project(iReq.client, '#services');
     sClients.respond(iReq, {data:sServices.list()});
   };
 
@@ -1358,40 +1387,55 @@ var sProjects = {
 
   sProjects.syncFrom = { ssid:true, password:true, host:true };
   sProjects.handle_syncFrom = function(iReq) {
+    if (!sWelcome) {
+      sClients.respond(iReq, {error:'cannot sync over a database'});
+      return;
+    }
+    if (!sProjects.syncFromData)
+      sProjects.syncFromData = { host: { ssid:iReq.ssid, password:iReq.password, host:iReq.host }};
+    sWelcome = sWelcome === 'syncRun' ? 'syncPause' : 'syncRun';
+    if (sWelcome === 'syncPause') {
+      sClients.respond(iReq, {status:'ok'});
+      return;
+    }
     //. connect to ssid
     var aHost = iReq.host.split(':');
-    var aHttp = http.createClient(+aHost[1] || 80, aHost[0]);
     var aHeader = { /*'Connection':'keep-alive',*/ 'Content-Length':0 };
-    var aRename = { 'clients':1, 'projects':1 };
-    try {
-    var aNodeInfo = fs.readFileSync(sMainDir+'sync_filelist', 'ascii');
-    } catch (err) {
-      if (err.errno !== process.ENOENT) throw err;
-    }
-    if (!aNodeInfo) {
-      var aHtReq = aHttp.request('GET', '/sync?nodeid='+sUUId, aHeader);
+    var aRename = { 'sync_services':1, 'sync_instance':1 };
+    var aSent = 0;
+
+    if (!sProjects.syncFromData.list) {
+      var aHtReq = http.createClient(+aHost[1] || 80, aHost[0]).request('GET', '/sync?nodeid='+sUUId, aHeader);
       aHtReq.end();
+      sClients.notify(iReq, {type:'linkprogress', message:'connecting'});
       console.log('sent newNode request');
       aHtReq.on('response', function(aResp) {
-        //.sClients.notify()
+        sClients.notify(null, {type:'linkprogress', message:'starting'});
         aResp.setEncoding('ascii');
-        aNodeInfo = '';
+        var aNodeInfo = '';
         aResp.on('data', function(aData) { aNodeInfo += aData.toString() });
         aResp.on('end', function() {
-          fs.writeFileSync(sMainDir+'sync_filelist', aNodeInfo);
-          fGet(0);
+          aNodeInfo = JSON.parse(aNodeInfo);
+          aNodeInfo.host = sProjects.syncFromData.host;
+          sProjects.syncFromData = aNodeInfo;
+          beginDirectories();
+          makePath('#autogen.0');
+          fs.writeFileSync(sMainDir+'sync_filelist', JSON.stringify(aNodeInfo));
+          commitDirectories();
+          fGet(aNodeInfo.list, 0);
         });
       });
     } else {
-      fGet(0);
+      sClients.notify(iReq, {type:'linkprogress', message:'resuming'});
+      fGet(sProjects.syncFromData.list, 0);
     }
-    function fGet(idx) {
-      if (idx === 0) {
-        aNodeInfo = JSON.parse(aNodeInfo);
-        //.sClients.notify(aNodeInfo.size);
+    function fGet(list, idx) {
+      if (sWelcome === 'syncPause') {
+        sClients.notify(null, {type:'linkprogress', message:'paused'});
+        return;
       }
-      for (var aAlreadySent = 0; idx < aNodeInfo.list.length; ++idx) {
-        var aFile = sProjects._syncMakePath(aNodeInfo.list[idx] in aRename ? 'sync_'+aNodeInfo.list[idx] : aNodeInfo.list[idx]);
+      for (var aAlreadySent = 0; idx < list.length; ++idx) {
+        var aFile = sProjects._syncMakePath(list[idx] in aRename ? list[idx].slice(5) : list[idx]);
         try {
           aAlreadySent += fs.statSync(aFile).size;
         } catch (err) {
@@ -1399,17 +1443,19 @@ var sProjects = {
           break;
         }
       }
-      if (aAlreadySent)
-        ;//.sClients.notify();
+      if (aAlreadySent) {
+        aSent += aAlreadySent;
+        sClients.notify(null, {type:'linkprogress', ratio:aSent/sProjects.syncFromData.size});
+      }
       var aHttp = http.createClient(+aHost[1] || 80, aHost[0]);
-      if (idx < aNodeInfo.list.length) {
-        console.log('request file '+aNodeInfo.list[idx]);
-        var aHtReq = aHttp.request('GET', '/sync?nodeid='+sUUId+'&file='+encodeURIComponent(aNodeInfo.list[idx]), aHeader);
+      if (idx < list.length) {
+        console.log('request file '+list[idx]);
+        var aHtReq = aHttp.request('GET', '/sync?nodeid='+sUUId+'&file='+encodeURIComponent(list[idx]), aHeader);
         aHtReq.end();
         aHtReq.on('response', function(aResp) {
           console.log('start recv '+aFile+' '+aResp.headers['content-length']);
           if (aResp.statusCode !== 200) {
-            fGet(idx+1);
+            fGet(list, idx+1);
             return;
           }
           var aStream = fs.createWriteStream(aFile+'-sync');
@@ -1419,13 +1465,14 @@ var sProjects = {
             syncFile(aFile+'-sync', fRename);
             syncFile(getParent(aFile), fRename);
             var aCount = 2;
-            fGet(idx+1);
+            fGet(list, idx+1);
             function fRename(err) {
               if (err) throw err;
               if (--aCount === 0)
                 fs.rename(aFile+'-sync', aFile, function(err) {
                   if (err) throw err;
-                  aResp.headers['content-length']; //. sClients.notify()
+                  aSent += +aResp.headers['content-length'];
+                  sClients.notify(null, {type:'linkprogress', ratio:aSent/sProjects.syncFromData.size});
                 });
             }
           });
@@ -1435,8 +1482,11 @@ var sProjects = {
       aHtReq = aHttp.request('GET', '/sync?nodeid='+sUUId+'&done=1', { 'Content-Length':0 });
       aHtReq.end();
       aHtReq.on('response', function(aResp) {
+        delete sProjects.syncFromData;
         fs.unlink(sMainDir+'sync_filelist');
-        sClients.respond(iReq, { status:'ok' });
+        startDatabase(function() {
+          sClients.notify(null, {type:'linkprogress', message:'complete'});
+        });
       });
     }
   };
@@ -1511,7 +1561,7 @@ var sProjects = {
           aDb.exec("COMMIT TRANSACTION", noOpCallback, function() {
             aDb.close();
             var aData = { size:0, list:[] };
-            var aOmit = { 'instance':1, 'services':1, '#autogen':1, '#editcache':1, '#revisioncache':1 };
+            var aOmit = { 'instance':1, 'services':1, '#editcache':1, '#revisioncache':1 };
             fReadDir('');
             sClients.respond(iReq, { status:JSON.stringify(aData) });
             function fReadDir(path, type) {
