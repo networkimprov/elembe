@@ -251,6 +251,7 @@ function Queue() {
   };
 
   Queue.prototype.next = function() {
+    delete this.list[this.firstI];
     if (++this.firstI === this.nextI)
       this.firstI = this.nextI = 0;
   };
@@ -261,26 +262,48 @@ function Queue() {
     return aRet;
   };
 
-  function queueRequest(iReq) {
+  Queue._checkPause = null;
+
+  Queue.pause = function(iCallback) {
+    Queue._checkPause = function() {
+      for (var a in Project.list)
+        if (Project.list[a].queue.firstI !== Project.list[a].queue.nextI)
+          return;
+      if (sProject.queue.firstI !== sProject.queue.nextI)
+        return;
+      iCallback();
+    };
+    process.nextTick(Queue._checkPause);
+  };
+
+  Queue.resume = function() {
+    Queue._checkPause = null;
+  };
+
+  Queue.post = function(iReq) {
+    if (Queue._checkPause)
+      return;
     if (sRecord)
       sRecord.save(iReq);
     if (!iReq.project || !Project.list[iReq.project]) {
       if (sProjects.queue.post(iReq))
-        processQueue(null, true);
+        Queue.process(null, true);
     } else {
       if (Project.list[iReq.project].queue.post(iReq))
-        processQueue(iReq.project, true);
+        Queue.process(iReq.project, true);
     }
-  }
+  };
 
-  function processQueue(iProject, iUseCurr) {
+  Queue.process = function(iProject, iUseCurr) {
     var aQ = iProject ? Project.list[iProject].queue : sProjects.queue;
     if (!iUseCurr)
       aQ.next();
     var aReq = aQ.curr();
     if (!aReq) {
-      if (sPlayback)
-        queueRequest(sPlayback.next());
+      if (Queue._checkPause)
+        Queue._checkPause();
+      else if (sPlayback)
+        Queue.post(sPlayback.next());
       return;
     }
     if (aReq.project && !Project.list[aReq.project]) {
@@ -298,36 +321,31 @@ function Queue() {
             fs.readdir(sInbound, function(err, array) {
               if (err) throw err;
               array.sort();
-              var aIterDel, aIterN = 0;
-              fIter();
-              function fIter() {
-                if (aIterDel)
-                  fs.unlink(sInbound+aIterDel, noOpCallback);
-                while (aIterN < array.length && array[aIterN].slice(0, array[aIterN].lastIndexOf('_')) !== aReq.project) ++aIterN;
-                if (aIterN < array.length) {
-                  aIterDel = array[aIterN];
-                  fs.readFile(sInbound+array[aIterN++], function(err, buffer) {
+              fIter(0);
+              function fIter(idx) {
+                while (idx < array.length && array[idx].slice(0, array[idx].lastIndexOf('_')) !== aReq.project) ++idx;
+                if (idx < array.length)
+                  fs.readFile(sInbound+array[idx], function(err, buffer) {
                     if (err) throw err;
                     var aR = MqClient.unpackMsg(buffer);
-                    aR.callback = fIter;
+                    aR.callback = function() { fs.unlink(sInbound+array[idx], noOpCallback) };
                     aR.data = aR._buf;
                     delete aR._buf;
                     Project.list[aReq.project].queue.post(aR);
-                    processQueue(aReq.project, true);
+                    fIter(idx+1);
                   });
-                  return;
-                }
-                sProjects.setInstalled(aReq.project, fLastReq);
+                else
+                  sProjects.setInstalled(aReq.project, fLastReq);
               }
             });
           });
           function fLastReq() {
             Project.list[aReq.project].queue.post(aReq);
-            processQueue(aReq.project, true);
+            Queue.process(aReq.project, true);
           }
         } else
           sClients.respond(aReq, {error:'Request against invalid Project oid'}, 'noqueue');
-        processQueue();
+        Queue.process();
       });
       return;
     }
@@ -357,7 +375,7 @@ function Queue() {
         throw aErr;
       sClients.respond(aReq, {error: aReq.type + (aErr === 'autogen' ? ' illegal for autogen project' : ' request missing parameter '+aErr)});
     }
-  }
+  };
 
 var sWelcome;
 var sMainDir = 'data/';
@@ -403,7 +421,7 @@ function main() {
   startDatabase(function() {
     sProjects.queue.next();
     if (sPlayback) {
-      queueRequest(sPlayback.next());
+      Queue.post(sPlayback.next());
       return;
     }
     aServer = http.createServer(httpRequest);
@@ -423,7 +441,7 @@ function main() {
         if (sWelcome && aReq.type !== 'autogen' && aReq.type !== 'syncFrom')
           sClients.respond(aReq, {type:'welcome', state:sWelcome, host:(sProjects.syncFromData && sProjects.syncFromData.host)}, true);
         else
-          queueRequest(aReq);
+          Queue.post(aReq);
       });
       conn.on('disconnect', function() {
         aOn = false;
@@ -514,7 +532,7 @@ function httpRequest(req, res) {
         }
       });
     } else {
-      queueRequest({type:'syncTo', client:null, nodeid:aUrl.query.nodeid, done:aUrl.query.done, response:res});
+      Queue.post({type:'syncTo', client:null, nodeid:aUrl.query.nodeid, done:aUrl.query.done, response:res});
     }
   } else if (aFile === 'part') {
     if (req.method.toLowerCase() === 'post') {
@@ -533,7 +551,7 @@ function httpRequest(req, res) {
       });
       req.on('end', function() {
         aBuf = aBuf.slice(0, aLen-(aLastData.length-aLastData.lastIndexOf('\r\n--')));
-        queueRequest({type:'writePart', client:null, project:aUrl.query.project, page:aUrl.query.page, part:aUrl.query.oid, data:aBuf, response:res});
+        Queue.post({type:'writePart', client:null, project:aUrl.query.project, page:aUrl.query.page, part:aUrl.query.oid, data:aBuf, response:res});
       });
     } else {
       aFile = aUrl.query.oid.indexOf('_') < 0 ? getPath(aUrl.query.oid) : sRevisionCache+aUrl.query.oid;
@@ -686,7 +704,7 @@ var sServices = {
     iRow.conn.on('deliver', function(id, from, msg, etc) {
       var aData = typeof msg === 'undefined' ? null : msg;
       var aReq = {type:etc.project ? 'projectImport' : 'importt', client:null, project:etc.project, from:from, jso:etc, data:aData, callback:function() { iRow.conn.ack(id, 'ok') } };
-      queueRequest(aReq);
+      Queue.post(aReq);
     });
     iRow.conn.on('ack', function(id, type) {
       if (!iRow.queue.length || id !== iRow.queue[0])
@@ -699,9 +717,9 @@ var sServices = {
       if (iRow.msgHead.etc && iRow.msgHead.etc.type === 'invite') {
         if (type !== 'ok') {
           ++fOk.count;
-          queueRequest({type:'postMsg', client:null, project:iRow.msgHead.etc.oid, msg:'Invited user '+iRow.msgHead.alias+' is unknown', callback:fOk});
+          Queue.post({type:'postMsg', client:null, project:iRow.msgHead.etc.oid, msg:'Invited user '+iRow.msgHead.alias+' is unknown', callback:fOk});
         }
-        queueRequest({type:'projectImport', client:null, project:iRow.msgHead.etc.oid, from:sUUId, data:null, callback:fOk,
+        Queue.post({type:'projectImport', client:null, project:iRow.msgHead.etc.oid, from:sUUId, data:null, callback:fOk,
           jso:{type:'memberAlias', alias:iRow.msgHead.alias, invite:type === 'ok' ? 'accept' : 'invalid'}});
       } else {
         fOk();
@@ -911,7 +929,7 @@ var sAttachments = {
       this.file[iOid] = { readOnly:true, n:-1, id:null, onWrite: function(event) {
         if (event.mask & Inotify.IN_IGNORED)
           return;
-        queueRequest({type:'writePart', client:null, project:iProject, page:iPage, part:iOid, data:null});
+        Queue.post({type:'writePart', client:null, project:iProject, page:iPage, part:iOid, data:null});
       }};
     }
     return this.file[iOid];
@@ -2755,7 +2773,7 @@ console.log(partlist);
     while (iIdx < iList.length && (!iList[iIdx].oid || iList[iIdx].outofband))
       ++iIdx;
     if (iIdx >= iList.length) {
-      processQueue(iReq.project);
+      Queue.process(iReq.project);
       return;
     }
     var that = this;
@@ -3105,7 +3123,7 @@ var sClients = {
     if (iReqOrSkip && iReqOrSkip.type) {
       if (iReqOrSkip.callback)
         iReqOrSkip.callback();
-      processQueue(iReqOrSkip.project);
+      Queue.process(iReqOrSkip.project);
     }
   };
 
@@ -3128,7 +3146,7 @@ var sClients = {
       iReq.callback();
     }
     if (!iNoContinue)
-      processQueue(iReq.project);
+      Queue.process(iReq.project);
   };
 
 // main
