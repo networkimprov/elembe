@@ -269,8 +269,9 @@ function Queue() {
       for (var a in Project.list)
         if (Project.list[a].queue.firstI !== Project.list[a].queue.nextI)
           return;
-      if (sProject.queue.firstI !== sProject.queue.nextI)
+      if (sProjects.queue.firstI !== sProjects.queue.nextI)
         return;
+      Queue._checkPause = true;
       iCallback();
     };
     process.nextTick(Queue._checkPause);
@@ -300,9 +301,9 @@ function Queue() {
       aQ.next();
     var aReq = aQ.curr();
     if (!aReq) {
-      if (Queue._checkPause)
+      if (Queue._checkPause && Queue._checkPause !== true)
         Queue._checkPause();
-      else if (sPlayback)
+      if (sPlayback)
         Queue.post(sPlayback.next());
       return;
     }
@@ -519,21 +520,19 @@ var kTypeMap = { js:'text/javascript', css:'text/css', html:'text/html', xpi:'ap
 function httpRequest(req, res) {
   var aUrl = url.parse(req.url, true), aFile = kFileMap[aUrl.pathname];
   if (aFile === 'sync') {
-    if (aUrl.query.file) {
-      var aPath = sProjects._syncGetPath(aUrl.query.file);
-      fs.stat(aPath, function(err, stats) {
-        if (err && err.errno !== process.ENOENT) throw err;
-        if (stats) {
-          res.writeHead(200, { 'Content-Length':stats.size });
-          fs.createReadStream(aPath).pipe(res);
-        } else {
-          res.writeHead(400);
-          res.end();
-        }
-      });
-    } else {
-      Queue.post({type:'syncTo', client:null, nodeid:aUrl.query.nodeid, done:aUrl.query.done, response:res});
-    }
+    sProjects.syncTo(aUrl.query, function(data, size) {
+      if (!data) {
+        res.writeHead(size === 0 ? 400 : 200);
+        res.end();
+      } else if (size) {
+        res.writeHead(200, { 'Content-Length':size });
+        fs.createReadStream(data).pipe(res);
+      } else {
+        var aStr = JSON.stringify(data);
+        res.writeHead(200, { 'Content-Length':aStr.length });
+        res.end(aStr);
+      }
+    });
   } else if (aFile === 'part') {
     if (req.method.toLowerCase() === 'post') {
       req.setEncoding('binary');
@@ -1509,10 +1508,17 @@ var sProjects = {
     }
   };
 
-  sProjects.syncTo = { nodeid:true, done:true };
-  sProjects.handle_syncTo = function(iReq) {
+  sProjects.syncTo = function(iReq, iCallback) {
     console.log('syncTo '+iReq.nodeid+', done '+iReq.done);
-    if (iReq.done) {
+    if (iReq.file) {
+      var aPath = sProjects._syncGetPath(iReq.file);
+      fs.stat(aPath, function(err, stats) {
+        if (err && err.errno !== process.ENOENT) throw err;
+        iCallback(stats ? aPath : '', stats ? stats.size : 0);
+      });
+      return;
+    } else if (iReq.done) {
+      Queue.resume();
       fs.unlink(sMainDir+'sync_services', fDone);
       fs.unlink(sMainDir+'sync_instance', fDone);
       var aCount = 2;
@@ -1521,7 +1527,7 @@ var sProjects = {
         if (--aCount === 0)
           syncFile(sMainDir, function(err) {
             if (err) throw err;
-            sClients.respond(iReq, { status:'ok' });
+            iCallback();
           });
       }
       return;
@@ -1533,7 +1539,7 @@ var sProjects = {
       if (err.errno !== process.ENOENT) throw err;
     }
     if (!aStat) {
-      dupFile(sMainDir+'services', sMainDir+'sync_services-tmp', function(err) {
+      dupFile(sMainDir+'services', sMainDir+'sync_services-tmp', function(err) { //. could services db change during copy?
         if (err) throw err;
         aDb.open(sMainDir+'sync_services-tmp', function(err) {
           if (err) throw err;
@@ -1558,7 +1564,7 @@ var sProjects = {
         if (err) throw err;
         var aNodeId = {};
         aDb.exec("SELECT addnode, host, nodeid FROM service; \
-                  ATTACH '"+sMainDir+"instance' AS instance; \
+                  ATTACH '"+sMainDir+"sync_instance' AS instance; \
                   BEGIN TRANSACTION; ", function(err, row) {
           if (err) throw err;
           if (row && row.addnode) aNodeId[row.host] = row.nodeid;
@@ -1580,8 +1586,10 @@ var sProjects = {
             aDb.close();
             var aData = { size:0, list:[] };
             var aOmit = { 'instance':1, 'services':1, '#editcache':1, '#revisioncache':1 };
-            fReadDir('');
-            sClients.respond(iReq, { status:JSON.stringify(aData) });
+            Queue.pause(function() {
+              fReadDir('');
+              iCallback(aData);
+            });
             function fReadDir(path, type) {
               var aList = fs.readdirSync(sMainDir+path);
               for (var a=0; a < aList.length; ++a) {
