@@ -455,13 +455,17 @@ function main() {
 function startDatabase(iCallback) {
   try {
   var aMain = fs.statSync(sMainDir);
-  sProjects.syncFromData = JSON.parse(fs.readFileSync(sMainDir+'sync_filelist', 'ascii'));
-  sWelcome = 'syncPause';
+  var aBuf = fs.readFileSync(sMainDir+'sync_filelist', 'ascii');
+  if (aBuf.length)
+    sProjects.syncFromData = JSON.parse(aBuf);
+  sWelcome = aBuf.length ? 'syncPause' : 'new';
   } catch (err) {
     if (err.errno !== process.ENOENT) throw err;
     sWelcome = aMain ? null : 'new';
   }
   if (sWelcome) {
+    if (aBuf !== undefined && !aBuf.length)
+      clearDirectories();
     process.nextTick(iCallback);
     return;
   }
@@ -498,6 +502,11 @@ function beginDirectories() {
     }
   }
   process.umask(aMask);
+  try {
+  fs.unlinkSync(sMainDir+'sync_filelist');
+  } catch (err) {
+    if (err.errno !== process.ENOENT) throw err;
+  }
   sMainDir = aList[1];
 }
 
@@ -505,6 +514,29 @@ function commitDirectories() {
   var aMain = sMainDir.replace('_tmp', '');
   fs.renameSync(sMainDir, aMain);
   sMainDir = aMain;
+}
+
+function clearDirectories(iLater) {
+  fs.closeSync(fs.openSync(sMainDir+'sync_filelist', 'w'));
+  if (iLater)
+    return;
+  fReadDir('');
+  function fReadDir(path) {
+    var aList = fs.readdirSync(sMainDir+path);
+    for (var a=0; a < aList.length; ++a) {
+      if (!path && aList[a] === 'sync_filelist')
+        continue;
+      var aStats = fs.statSync(sMainDir+path+aList[a]);
+      if (aStats.isFile())
+        fs.unlinkSync(sMainDir+path+aList[a]);
+      else if (aStats.isDirectory())
+        fReadDir(path+aList[a]+'/');
+    }
+    if (path)
+      fs.rmdirSync(sMainDir+path);
+    else
+      fs.renameSync(sMainDir, sMainDir.replace('/', '_tmp/'));
+  }
 }
 
 var kFileMap = {
@@ -520,16 +552,16 @@ var kTypeMap = { js:'text/javascript', css:'text/css', html:'text/html', xpi:'ap
 function httpRequest(req, res) {
   var aUrl = url.parse(req.url, true), aFile = kFileMap[aUrl.pathname];
   if (aFile === 'sync') {
-    sProjects.syncTo(aUrl.query, function(data, size) {
-      if (!data) {
-        res.writeHead(size === 0 ? 400 : 200);
+    sProjects.syncTo(aUrl.query || {}, function(status, data, size) {
+      if (status !== 200 || !data) {
+        res.writeHead(status);
         res.end();
       } else if (size) {
-        res.writeHead(200, { 'Content-Length':size });
+        res.writeHead(status, { 'Content-Length':size });
         fs.createReadStream(data).pipe(res);
       } else {
         var aStr = JSON.stringify(data);
-        res.writeHead(200, { 'Content-Length':aStr.length });
+        res.writeHead(status, { 'Content-Length':aStr.length });
         res.end(aStr);
       }
     });
@@ -1422,7 +1454,7 @@ var sProjects = {
     var aSent = 0;
 
     if (!sProjects.syncFromData.list) {
-      var aHtReq = http.createClient(+aHost[1] || 80, aHost[0]).request('GET', '/sync?nodeid='+sUUId, aHeader);
+      var aHtReq = http.createClient(+aHost[1] || 80, aHost[0]).request('GET', '/sync', aHeader);
       aHtReq.end();
       sClients.notify(iReq, {type:'linkprogress', message:'connecting'});
       console.log('sent newNode request');
@@ -1467,11 +1499,16 @@ var sProjects = {
       var aHttp = http.createClient(+aHost[1] || 80, aHost[0]);
       if (idx < list.length) {
         console.log('request file '+list[idx]);
-        var aHtReq = aHttp.request('GET', '/sync?nodeid='+sUUId+'&file='+encodeURIComponent(list[idx]), aHeader);
+        var aHtReq = aHttp.request('GET', '/sync?session='+sProjects.syncFromData.session+'&file='+encodeURIComponent(list[idx]), aHeader);
         aHtReq.end();
         aHtReq.on('response', function(aResp) {
           console.log('start recv '+aFile+' '+aResp.headers['content-length']);
-          if (aResp.statusCode !== 200) {
+          if (aResp.statusCode === 300) {
+            clearDirectories('later');
+            sClients.notify(null, {type:'linkprogress', message:'session expired'});
+            return;
+          }
+          if (aResp.statusCode === 400) {
             fGet(list, idx+1);
             return;
           }
@@ -1496,9 +1533,14 @@ var sProjects = {
         });
         return;
       }
-      aHtReq = aHttp.request('GET', '/sync?nodeid='+sUUId+'&done=1', { 'Content-Length':0 });
+      aHtReq = aHttp.request('GET', '/sync?session='+sProjects.syncFromData.session+'&done=1', { 'Content-Length':0 });
       aHtReq.end();
       aHtReq.on('response', function(aResp) {
+        if (aResp.statusCode === 300) {
+          clearDirectories('later');
+          sClients.notify(null, {type:'linkprogress', message:'session expired'});
+          return;
+        }
         delete sProjects.syncFromData;
         fs.unlink(sMainDir+'sync_filelist');
         startDatabase(function() {
@@ -1509,15 +1551,19 @@ var sProjects = {
   };
 
   sProjects.syncTo = function(iReq, iCallback) {
-    console.log('syncTo '+iReq.nodeid+', done '+iReq.done);
+    if ((iReq.file || iReq.done) && iReq.session !== sProjects.syncToSession) {
+      iCallback(300);
+      return;
+    }
     if (iReq.file) {
       var aPath = sProjects._syncGetPath(iReq.file);
       fs.stat(aPath, function(err, stats) {
         if (err && err.errno !== process.ENOENT) throw err;
-        iCallback(stats ? aPath : '', stats ? stats.size : 0);
+        iCallback(stats ? 200 : 400, stats && aPath, stats && stats.size);
       });
       return;
     } else if (iReq.done) {
+      delete sProjects.syncToSession;
       Queue.resume();
       fs.unlink(sMainDir+'sync_services', fDone);
       fs.unlink(sMainDir+'sync_instance', fDone);
@@ -1527,7 +1573,7 @@ var sProjects = {
         if (--aCount === 0)
           syncFile(sMainDir, function(err) {
             if (err) throw err;
-            iCallback();
+            iCallback(200);
           });
       }
       return;
@@ -1584,11 +1630,12 @@ var sProjects = {
           }
           aDb.exec("COMMIT TRANSACTION", noOpCallback, function() {
             aDb.close();
-            var aData = { size:0, list:[] };
+            sProjects.syncToSession = Date.now().toString();
+            var aData = { session:sProjects.syncToSession, size:0, list:[] };
             var aOmit = { 'instance':1, 'services':1, '#editcache':1, '#revisioncache':1 };
             Queue.pause(function() {
               fReadDir('');
-              iCallback(aData);
+              iCallback(200, aData);
             });
             function fReadDir(path, type) {
               var aList = fs.readdirSync(sMainDir+path);
