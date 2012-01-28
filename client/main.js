@@ -340,25 +340,32 @@ suae.menus = {
         <div class="palgrid" name="navcreatedlist" style="position:static;" cellclass="palgridrow" tag="navbaritem"><div value="nil">nil</div></div>\
       </div></div>' ,
   welcome: '\
-    <div class="pallabel" name="text" style="position:static; float:left; width:55%; margin-bottom:3em;">\
-      <b>Welcome to Elembe.</b><br/><br/>\
-      If you\'re a first-time user, choose Start Fresh.<br/><br/>\
-      To link this unit to an existing one, choose Link to Existing.</div>\
-    <div class="palbutton" name="fresh" style="position:static; float:right; width:40%; margin-top:2em;">Start Fresh</div>\
-    <div class="palbutton" name="link"  style="position:static; float:right; width:40%; margin-top:1em;">Link to Existing</div>\
-    <div class="palpanel" name="welcomepanel" style="position:static; width:100%; padding:1em;">\
-      <div class="palsubpanel" name="welcomefresh">\
-        <div class="pallabel"  name="freshgen"   style="position:static; text-align:center;">Generating Database...</div>\
-      </div><div class="palsubpanel" name="welcomelink">\
-        <div class="pallabel"  name="linkhostl"   style="position:static; width:40%; float:left;">Hostname</div>\
-        <div class="paltext"   name="linkhost"    style="position:static; width:50%;"></div>\
-        <div class="pallabel"  name="linkssidl"   style="position:static; width:40%; float:left;">SSID</div>\
-        <div class="paltext"   name="linkssid"    style="position:static; width:50%; margin-top:0.5em;"></div>\
-        <div class="pallabel"  name="linkkeyl"    style="position:static; width:40%; float:left;">Password</div>\
-        <div class="paltext"   name="linkkey"     style="position:static; width:50%; margin-top:0.5em;"></div>\
-        <div class="pallabel"  name="linkmessage" style="position:static; width:20%; float:left; margin-top:1em; border: 1px solid #aaa;">&nbsp;</div>\
-        <div class="palbutton" name="linkgo"      style="position:static; width:50%; margin:1em auto 0;">Retrieve Database</div>\
-      </div></div>'
+    <div class="palpanel" name="startpanel" style="position:static; border-style:none;">\
+    <div class="palsubpanel" name="startinterrupt">\
+      <div class="pallabel" name="interrupttext" style="position:static">Sync in Progress. You can cancel to access your data, but must start the sync over.</div>\
+      <div class="palbutton" name="interrupt" style="position:static; margin-top:1em; width:40%;">Cancel</div>\
+    </div><div class="palsubpanel" name="startwelcome">\
+      <div class="pallabel" name="text" style="position:static; float:left; width:55%; margin-bottom:2em;">\
+        <b>Welcome to Elembe.</b><br/><br/>\
+        If you\'re a first-time user, choose Start Fresh.<br/><br/>\
+        To link this unit to an existing one, choose Link to Existing.</div>\
+      <div class="palbutton" name="fresh" style="position:static; float:right; width:40%; margin-top:2em;">Start Fresh</div>\
+      <div class="palbutton" name="link"  style="position:static; float:right; width:40%; margin-top:1em;">Link to Existing</div>\
+      <div class="palpanel" name="welcomepanel" style="position:static; clear:both; padding:1em; border-style:none;">\
+        <div class="palsubpanel" name="welcomefresh">\
+          <div class="pallabel"  name="freshgen"   style="position:static; text-align:center;">Generating Database...</div>\
+        </div><div class="palsubpanel" name="welcomelink">\
+          <div class="pallabel"  name="linkhostl"   style="position:static; width:40%; float:left;">Hostname</div>\
+          <div class="paltext"   name="linkhost"    style="position:static; width:50%;"></div>\
+          <div class="pallabel"  name="linkssidl"   style="position:static; width:40%; float:left;">SSID</div>\
+          <div class="paltext"   name="linkssid"    style="position:static; width:50%; margin-top:0.5em;"></div>\
+          <div class="pallabel"  name="linkkeyl"    style="position:static; width:40%; float:left;">Password</div>\
+          <div class="paltext"   name="linkkey"     style="position:static; width:50%; margin-top:0.5em;"></div>\
+          <div class="pallabel"  name="linkmessage" style="position:static; width:25%; float:left; margin-top:1em; padding:0.2em; border: 1px solid #aaa;">&nbsp;</div>\
+          <div class="palbutton" name="linkgo"      style="position:static; width:35%; float:left; margin:1em;">Retrieve Database</div>\
+          <div class="palbutton" name="linkstop"    style="position:static; width:20%; float:left; margin:1em;">Cancel</div>\
+        </div></div>\
+    </div></div>'
 };
 
 suae.pMgr = {
@@ -398,7 +405,9 @@ suae.pMgr = {
   init: function() {
     var that = this;
     suae.request({type:'getClientNav'}, function(jso) {
-      if (jso.type === 'welcome') {
+      if (jso.screen === 'welcome') {
+        suae.menus.welcome.showPanel('startwelcome');
+        suae.menus.welcome.enable('linkstop', jso.state !== 'new');
         if (jso.state !== 'new') {
           suae.menus.welcome.showPanel(jso.state === 'autogen' ? 'welcomefresh' : 'welcomelink');
           if (jso.state !== 'autogen') {
@@ -406,9 +415,15 @@ suae.pMgr = {
             suae.menus.welcome.setValue('linkhost', jso.host.host);
             suae.menus.welcome.setValue('linkssid', jso.host.ssid);
             suae.menus.welcome.setValue('linkkey', jso.host.password);
-            suae.menus.welcome.setValue('linkgo', jso.state === 'syncPause' ? 'Resume' : 'Pause');
+            if (jso.state === 'syncPause')
+              suae.menus.welcome.setValue('linkgo', 'Resume Retrieval');
+            else
+              suae.menus.welcome.enable('linkgo', false);
           }
         }
+        return;
+      } else if (jso.screen === 'interrupt') {
+        suae.menus.welcome.showPanel('startinterrupt');
         return;
       }
 
@@ -460,9 +475,15 @@ suae.pMgr = {
         break;
       case 'linkprogress':
         suae.menus.welcome.setValue('linkmessage', iJso.list[a].ratio ? (iJso.list[a].ratio*100).toFixed(2)+'%' : iJso.list[a].message);
-        suae.menus.welcome.setValue('linkgo', iJso.list[a].message === 'paused' ? 'Resume' : 'Pause');
+        suae.menus.welcome.enable('linkgo', iJso.list[a].message === 'disconnected');
+        suae.menus.welcome.enable('linkstop', true);
+        if (iJso.list[a].message === 'disconnected')
+          suae.menus.welcome.setValue('linkgo', 'Resume Retrieval');
         if (iJso.list[a].message === 'complete')
           this.init();
+        break;
+      case 'restart':
+        location.reload();
         break;
       case 'services':
         for (var aS in iJso.list[a].list) {
@@ -916,7 +937,13 @@ suae.pMgr = {
       break;
     case 'linkgo':
       if (this.linkhost)
-        suae.request({type:'syncFrom', ssid:'', password:'', host:this.linkhost}, function(){});
+        suae.request({type:'syncFrom', op:'go', ssid:'', password:'', host:this.linkhost}, function(){});
+      break;
+    case 'linkstop':
+      suae.request({type:'syncFrom', op:'stop', ssid:null, password:null, host:null}, function(){});
+      break;
+    case 'interrupt':
+      suae.request({type:'interrupt'}, function(){});
       break;
     case 'tool':
       this.selectEditor(iValue);

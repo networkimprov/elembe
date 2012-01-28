@@ -439,10 +439,18 @@ function main() {
         }
         var aReq = JSON.parse(msg);
         aReq.client = aClientId;
-        if (sWelcome && aReq.type !== 'autogen' && aReq.type !== 'syncFrom')
-          sClients.respond(aReq, {type:'welcome', state:sWelcome, host:(sProjects.syncFromData && sProjects.syncFromData.host)}, true);
-        else
+        if (sWelcome && aReq.type !== 'autogen' && aReq.type !== 'syncFrom') {
+          sClients.respond(aReq, {screen:'welcome', state:sWelcome, host:(sProjects.syncFromData && sProjects.syncFromData.host)}, true);
+        } else if (sProjects.syncToSession) {
+          if (aReq.type === 'interrupt') {
+            delete sProjects.syncToSession;
+            Queue.resume();
+            sClients.notify(null, {type:'restart'});
+          }
+          sClients.respond(aReq, aReq.type === 'interrupt' ? {} : {screen:'interrupt'}, true);
+        } else {
           Queue.post(aReq);
+        }
       });
       conn.on('disconnect', function() {
         aOn = false;
@@ -1434,19 +1442,36 @@ var sProjects = {
 
   sProjects._syncGetPath = function(iName) { return this._syncMakePath(iName, true) };
 
-  sProjects.syncFrom = { ssid:true, password:true, host:true };
+  sProjects._syncStop = function(iLater, iLocal, iReq) {
+    sClients.notify(iReq, {type:'linkprogress', message: iLocal ? 'cancelling' : 'session expired'});
+    if (sProjects.syncFromData.stop === (iLocal ? 'expired' : 'stopping'))
+      iLater = false;
+    clearDirectories(iLater);
+    if (iLater) {
+      sProjects.syncFromData.stop = iLocal ? 'stopping' : 'expired';
+    } else {
+      sWelcome = 'new';
+      delete sProjects.syncFromData;
+      sClients.notify(null, {type:'restart'});
+    }
+  };
+
+  sProjects.syncFrom = { op:true, ssid:true, password:true, host:true };
   sProjects.handle_syncFrom = function(iReq) {
     if (!sWelcome) {
       sClients.respond(iReq, {error:'cannot sync over a database'});
       return;
     }
-    if (!sProjects.syncFromData)
-      sProjects.syncFromData = { host: { ssid:iReq.ssid, password:iReq.password, host:iReq.host }};
-    sWelcome = sWelcome === 'syncRun' ? 'syncPause' : 'syncRun';
-    if (sWelcome === 'syncPause') {
-      sClients.respond(iReq, {status:'ok'});
+    if (iReq.op === 'stop') {
+      if (sWelcome !== 'syncRun' && sWelcome !== 'syncPause')
+        sClients.respond(iReq, {error:'sync not started'});
+      else
+        sProjects._syncStop(sWelcome !== 'syncPause', true, iReq);
       return;
     }
+    if (!sProjects.syncFromData)
+      sProjects.syncFromData = { host: { ssid:iReq.ssid, password:iReq.password, host:iReq.host }};
+    sWelcome = 'syncRun';
     //. connect to ssid
     var aHost = iReq.host.split(':');
     var aHeader = { /*'Connection':'keep-alive',*/ 'Content-Length':0 };
@@ -1459,6 +1484,7 @@ var sProjects = {
       sClients.notify(iReq, {type:'linkprogress', message:'connecting'});
       console.log('sent newNode request');
       aHtReq.on('response', function(aResp) {
+        //. if (sProjects.syncFromData.stop) abort
         sClients.notify(null, {type:'linkprogress', message:'starting'});
         aResp.setEncoding('ascii');
         var aNodeInfo = '';
@@ -1479,8 +1505,12 @@ var sProjects = {
       fGet(sProjects.syncFromData.list, 0);
     }
     function fGet(list, idx) {
-      if (sWelcome === 'syncPause') {
-        sClients.notify(null, {type:'linkprogress', message:'paused'});
+      var aHttp = http.createClient(+aHost[1] || 80, aHost[0]);
+      if (sProjects.syncFromData.stop) {
+        aHtReq = aHttp.request('GET', '/sync?session='+sProjects.syncFromData.session+'&done=cancel', { 'Content-Length':0 });
+        aHtReq.end();
+        aHtReq.on('response', function(aResp) {});
+        sProjects._syncStop(false, true);
         return;
       }
       for (var aAlreadySent = 0; idx < list.length; ++idx) {
@@ -1496,7 +1526,6 @@ var sProjects = {
         aSent += aAlreadySent;
         sClients.notify(null, {type:'linkprogress', ratio:aSent/sProjects.syncFromData.size});
       }
-      var aHttp = http.createClient(+aHost[1] || 80, aHost[0]);
       if (idx < list.length) {
         console.log('request file '+list[idx]);
         var aHtReq = aHttp.request('GET', '/sync?session='+sProjects.syncFromData.session+'&file='+encodeURIComponent(list[idx]), aHeader);
@@ -1504,8 +1533,7 @@ var sProjects = {
         aHtReq.on('response', function(aResp) {
           console.log('start recv '+aFile+' '+aResp.headers['content-length']);
           if (aResp.statusCode === 300) {
-            clearDirectories('later');
-            sClients.notify(null, {type:'linkprogress', message:'session expired'});
+            sProjects._syncStop(true, false);
             return;
           }
           if (aResp.statusCode === 400) {
@@ -1533,16 +1561,15 @@ var sProjects = {
         });
         return;
       }
-      aHtReq = aHttp.request('GET', '/sync?session='+sProjects.syncFromData.session+'&done=1', { 'Content-Length':0 });
+      aHtReq = aHttp.request('GET', '/sync?session='+sProjects.syncFromData.session+'&done=ok', { 'Content-Length':0 });
       aHtReq.end();
       aHtReq.on('response', function(aResp) {
         if (aResp.statusCode === 300) {
-          clearDirectories('later');
-          sClients.notify(null, {type:'linkprogress', message:'session expired'});
+          sProjects._syncStop(true, false);
           return;
         }
         delete sProjects.syncFromData;
-        fs.unlink(sMainDir+'sync_filelist');
+        fs.unlinkSync(sMainDir+'sync_filelist');
         startDatabase(function() {
           sClients.notify(null, {type:'linkprogress', message:'complete'});
         });
@@ -1565,16 +1592,22 @@ var sProjects = {
     } else if (iReq.done) {
       delete sProjects.syncToSession;
       Queue.resume();
+      sClients.notify(null, {type:'restart'});
+      if (iReq.done === 'cancel') {
+        process.nextTick(fCb);
+        return;
+      }
       fs.unlink(sMainDir+'sync_services', fDone);
       fs.unlink(sMainDir+'sync_instance', fDone);
       var aCount = 2;
       function fDone(err) {
         if (err && err.errno !== process.ENOENT) throw err;
         if (--aCount === 0)
-          syncFile(sMainDir, function(err) {
-            if (err) throw err;
-            iCallback(200);
-          });
+          syncFile(sMainDir, fCb);
+      }
+      function fCb(err) {
+        if (err) throw err;
+        iCallback(200); //. if this isn't received, nodeid will be abandoned
       }
       return;
     }
@@ -1633,6 +1666,7 @@ var sProjects = {
             sProjects.syncToSession = Date.now().toString();
             var aData = { session:sProjects.syncToSession, size:0, list:[] };
             var aOmit = { 'instance':1, 'services':1, '#editcache':1, '#revisioncache':1 };
+            sClients.notify(null, {type:'restart'});
             Queue.pause(function() {
               fReadDir('');
               iCallback(200, aData);
