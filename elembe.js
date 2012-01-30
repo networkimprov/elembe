@@ -1443,16 +1443,18 @@ var sProjects = {
   sProjects._syncGetPath = function(iName) { return this._syncMakePath(iName, true) };
 
   sProjects._syncStop = function(iLater, iLocal, iReq) {
-    sClients.notify(iReq, {type:'linkprogress', message: iLocal ? 'cancelling' : 'session expired'});
+    sClients.notify(iReq, {type:'linkprogress', message: iLocal ? 'canceling' : iLater ? 'session expired' : 'host busy'});
     if (sProjects.syncFromData.stop === (iLocal ? 'expired' : 'stopping'))
       iLater = false;
-    clearDirectories(iLater);
+    if (iLater || iLocal)
+      clearDirectories(iLater);
     if (iLater) {
       sProjects.syncFromData.stop = iLocal ? 'stopping' : 'expired';
     } else {
       sWelcome = 'new';
       delete sProjects.syncFromData;
-      sClients.notify(null, {type:'restart'});
+      if (iLocal)
+        sClients.notify(null, {type:'restart'});
     }
   };
 
@@ -1473,7 +1475,7 @@ var sProjects = {
       sProjects.syncFromData = { host: { ssid:iReq.ssid, password:iReq.password, host:iReq.host }};
     sWelcome = 'syncRun';
     //. connect to ssid
-    var aHost = iReq.host.split(':');
+    var aHost = sProjects.syncFromData.host.host.split(':');
     var aHeader = { /*'Connection':'keep-alive',*/ 'Content-Length':0 };
     var aRename = { 'sync_services':1, 'sync_instance':1 };
     var aSent = 0;
@@ -1484,7 +1486,10 @@ var sProjects = {
       sClients.notify(iReq, {type:'linkprogress', message:'connecting'});
       console.log('sent newNode request');
       aHtReq.on('response', function(aResp) {
-        //. if (sProjects.syncFromData.stop) abort
+        if (aResp.statusCode === 300) {
+          sProjects._syncStop(false, false);
+          return;
+        }
         sClients.notify(null, {type:'linkprogress', message:'starting'});
         aResp.setEncoding('ascii');
         var aNodeInfo = '';
@@ -1532,11 +1537,11 @@ var sProjects = {
         aHtReq.end();
         aHtReq.on('response', function(aResp) {
           console.log('start recv '+aFile+' '+aResp.headers['content-length']);
-          if (aResp.statusCode === 300) {
+          switch (aResp.statusCode) {
+          case 300:
             sProjects._syncStop(true, false);
             return;
-          }
-          if (aResp.statusCode === 400) {
+          case 400:
             fGet(list, idx+1);
             return;
           }
@@ -1549,13 +1554,12 @@ var sProjects = {
             var aCount = 2;
             fGet(list, idx+1);
             function fRename(err) {
-              if (err) throw err;
-              if (--aCount === 0)
-                fs.rename(aFile+'-sync', aFile, function(err) {
-                  if (err) throw err;
-                  aSent += +aResp.headers['content-length'];
-                  sClients.notify(null, {type:'linkprogress', ratio:aSent/sProjects.syncFromData.size});
-                });
+              if (err && err.errno !== process.ENOENT) throw err;
+              if (--aCount > 0 || !sProjects.syncFromData)
+                return;
+              fs.renameSync(aFile+'-sync', aFile);
+              aSent += +aResp.headers['content-length'];
+              sClients.notify(null, {type:'linkprogress', ratio:aSent/sProjects.syncFromData.size});
             }
           });
         });
@@ -1578,7 +1582,7 @@ var sProjects = {
   };
 
   sProjects.syncTo = function(iReq, iCallback) {
-    if ((iReq.file || iReq.done) && iReq.session !== sProjects.syncToSession) {
+    if (sWelcome || (!iReq.session ? sProjects.syncToSession : iReq.session !== sProjects.syncToSession)) {
       iCallback(300);
       return;
     }
@@ -1611,6 +1615,8 @@ var sProjects = {
       }
       return;
     }
+    sProjects.syncToSession = Date.now().toString();
+    sClients.notify(null, {type:'restart'});
     var aDb = new sqlite.Database();
     try {
     var aStat = fs.statSync('sync_services');
@@ -1663,10 +1669,8 @@ var sProjects = {
           }
           aDb.exec("COMMIT TRANSACTION", noOpCallback, function() {
             aDb.close();
-            sProjects.syncToSession = Date.now().toString();
             var aData = { session:sProjects.syncToSession, size:0, list:[] };
             var aOmit = { 'instance':1, 'services':1, '#editcache':1, '#revisioncache':1 };
-            sClients.notify(null, {type:'restart'});
             Queue.pause(function() {
               fReadDir('');
               iCallback(200, aData);

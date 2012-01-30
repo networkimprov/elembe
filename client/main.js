@@ -475,15 +475,23 @@ suae.pMgr = {
         break;
       case 'linkprogress':
         suae.menus.welcome.setValue('linkmessage', iJso.list[a].ratio ? (iJso.list[a].ratio*100).toFixed(2)+'%' : iJso.list[a].message);
-        suae.menus.welcome.enable('linkgo', iJso.list[a].message === 'disconnected');
-        suae.menus.welcome.enable('linkstop', true);
-        if (iJso.list[a].message === 'disconnected')
-          suae.menus.welcome.setValue('linkgo', 'Resume Retrieval');
-        if (iJso.list[a].message === 'complete')
+        if (iJso.list[a].message === 'complete') {
           this.init();
+          break;
+        }
+        var aDisconn = iJso.list[a].message === 'disconnected';
+        var aBusy    = iJso.list[a].message === 'host busy';
+        var aExpire  = iJso.list[a].message === 'session expired';
+        var aCancel  = iJso.list[a].message === 'canceling';
+        suae.menus.welcome.enable('linkgo', aDisconn || aBusy);
+        suae.menus.welcome.enable('linkstop', !aBusy && !aCancel);
+        if (aDisconn || aBusy)
+          suae.menus.welcome.setValue('linkgo', aDisconn ? 'Resume Retrieval' : 'Retrieve Database');
         break;
       case 'restart':
-        location.reload();
+        suae.touchFlush(function() {
+          location.reload();
+        });
         break;
       case 'services':
         for (var aS in iJso.list[a].list) {
