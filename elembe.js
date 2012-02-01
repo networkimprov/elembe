@@ -386,6 +386,7 @@ var sSendDir = '#outbound/';
 var sInbound = '#inbound/';
 var sHttpPort = 8000;
 var sUUId;
+var sNodeOffset;
 var sRecord = null;
 var sPlayback = null;
 
@@ -480,9 +481,12 @@ function startDatabase(iCallback) {
   var aDb = new sqlite.Database();
   aDb.open(sMainDir+'instance', function (err) {
     if (err) throw err;
-    aDb.exec("SELECT uuid FROM instance", function(err, row) {
+    aDb.exec("SELECT uuid, offset FROM instance", function(err, row) {
       if (err) throw err;
-      if (row) sUUId = row.uuid;
+      if (row) {
+        sUUId = row.uuid;
+        sNodeOffset = row.offset;
+      }
     }, function() {
       aDb.close();
       sAttachments.init();
@@ -1616,7 +1620,7 @@ var sProjects = {
       return;
     }
     sProjects.syncToSession = Date.now().toString();
-    sClients.notify(null, {type:'restart'});
+    sClients.notify(null, {type:'restart'}); //. should wait til clients have pushed updates
     var aDb = new sqlite.Database();
     try {
     var aStat = fs.statSync('sync_services');
@@ -1728,7 +1732,7 @@ function Project(iRecord, iCallback) {
         iCallback();
         return;
       }
-      that.db.prepare("UPDATE revision SET map = ? WHERE oid = ' '", function(prepErr, stmt) {
+      that.db.prepare("UPDATE revision SET map = ?, author = '"+sNodeOffset+"' WHERE oid = ' '", function(prepErr, stmt) {
         if (prepErr) throw prepErr;
         that.stmt.setRevisionMap = stmt;
         if (aRevPending) {
