@@ -98,10 +98,10 @@ function createSchema(iSchema, iFile) {
   for (var aDb in iSchema) {
     for (var aTb in iSchema[aDb]) {
       aSql += "CREATE TABLE IF NOT EXISTS "+aDb+"."+aTb+" (";
-      var aComma = false;
+      var aComma = '';
       for (var aCl in iSchema[aDb][aTb]) {
-        aSql += (aComma ? ',' : '') + aCl +' '+ iSchema[aDb][aTb][aCl];
-        aComma = true;
+        aSql += aComma + aCl +' '+ iSchema[aDb][aTb][aCl];
+        aComma = ',';
       }
       aSql += ");\n";
     }
@@ -1798,7 +1798,8 @@ function Project(iRecord, iCallback) {
       diff: {
         object: 'text', // oid
         revision: 'text', // oid
-        data: 'blob'
+        data: 'blob',
+        ' ': 'primary key ( object, revision )'
       },
       message: {
         date: 'text',      // iso/utc time
