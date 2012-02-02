@@ -721,7 +721,7 @@ var sServices = {
       function fClear(isNew) {
         var a1 = "ATTACH 'instance' AS instance; \
                   BEGIN TRANSACTION; \
-                  UPDATE instance.instance SET offset = '"+offset+"';";
+                  UPDATE instance.instance SET offset = "+offset+";";
         var a2 = "UPDATE service SET addnode = NULL WHERE host = '"+iRow.host+"';";
         var a3 = "COMMIT TRANSACTION; \
                   DETACH instance;";
@@ -1665,7 +1665,7 @@ var sProjects = {
                 return fIter();
               var aSql = "UPDATE service SET addnode = NULL WHERE host = '"+aSvc+"';";
               if (offset)
-                aSql += "UPDATE instance SET offset = '"+offset+"';";
+                aSql += "UPDATE instance SET offset = "+offset+";";
               aDb.exec(aSql, noOpCallback, fIter);
             });
             delete aNodeId[aSvc];
@@ -1732,7 +1732,7 @@ function Project(iRecord, iCallback) {
         iCallback();
         return;
       }
-      that.db.prepare("UPDATE revision SET map = ?, author = '"+sNodeOffset+"' WHERE oid = ' '", function(prepErr, stmt) {
+      that.db.prepare("UPDATE revision SET map = ?, author = "+sNodeOffset+" WHERE oid = ' '", function(prepErr, stmt) {
         if (prepErr) throw prepErr;
         that.stmt.setRevisionMap = stmt;
         if (aRevPending) {
