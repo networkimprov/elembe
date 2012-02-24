@@ -683,7 +683,7 @@ var sServices = {
     iRow.msgHead = null;
     iRow.status = 'offline';
     iRow.conn = new MqClient();
-    iRow.conn.on('registered', function(aliases, err) {
+    iRow.conn.on('registered', function(aliases, id, err) {
       if (err && err !== 'user exists')
         throw new Error(err);
       if (aliases !== undefined)
@@ -704,6 +704,8 @@ var sServices = {
       iRow.newreg = 0;
       sServices.db.exec("UPDATE service SET newreg=0, aliases='"+iRow.aliases+"'"+aJoined+" WHERE host='"+iRow.host+"'", noOpCallback, function() {
         sClients.notify(null, {type:'services', list:sServices.list(iRow.host)}, '#services');
+        if (id)
+          iRow.conn.ack(id, 'ok');
       });
     });
     iRow.conn.on('added', function(offset, err) {
@@ -749,13 +751,13 @@ var sServices = {
       var aReq = {type:etc.project ? 'projectImport' : 'importt', client:null, project:etc.project, from:from, jso:etc, data:aData, callback:function() { iRow.conn.ack(id, 'ok') } };
       Queue.post(aReq);
     });
-    iRow.conn.on('ack', function(id, type) {
+    iRow.conn.on('ack', function(id, type, error) {
       if (!iRow.queue.length || id !== iRow.queue[0])
         return;
       if (iRow.timer)
         clearTimeout(iRow.timer);
-      if (/^error/.test(type))
-        console.log('ack failure: '+type);
+      if (type === 'error')
+        console.log('ack failure: '+error);
       fOk.count = 1;
       if (iRow.msgHead.etc && iRow.msgHead.etc.type === 'invite') {
         if (type !== 'ok') {
