@@ -3207,7 +3207,7 @@ var sClients = {
   };
 
   sClients.notify = function(iReqOrSkip, iData, iProj, iPage) {
-    var aMsg = { type:'update', project:iProj, list: (iData instanceof Array ? iData : [iData]) };
+    var aMsg = { type:'update', project: (!iProj || iProj.charAt(0) === '#' ? undefined : iProj), list: (iData instanceof Array ? iData : [iData]) };
     var aC = iReqOrSkip && iReqOrSkip.type ? iReqOrSkip.client : iReqOrSkip;
     for (var a in this.cl) {
       if (!iProj || this.cl[a].project[iProj] && (!iPage || this.cl[a].project[iProj][iPage])) {
