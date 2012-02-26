@@ -490,9 +490,8 @@ function startDatabase(iCallback) {
     }, function() {
       aDb.close();
       sAttachments.init();
-      sProjects.init(function() {
-        sServices.start();
-        iCallback();
+      sServices.start(function() {
+        sProjects.init(iCallback);
       });
     });
   });
@@ -639,7 +638,7 @@ var sServices = {
   s: {}
 };
 
-  sServices.start = function() {
+  sServices.start = function(iCallback) {
     var that = this;
     that.db = new sqlite.Database();
     that.db.open(sMainDir+'services', function(openErr) {
@@ -651,7 +650,7 @@ var sServices = {
             that._connect(svc.host);
             sClients.notify(null, {type:'services', list:that.list(svc.host)}, '#services');
           });
-      }, noOpCallback);
+      }, iCallback);
     });
   };
 
@@ -933,15 +932,7 @@ var sServices = {
   };
 
   sServices.post = function(iHost, iTo, iEtc, iMsg, iCallback) {
-    var aHead = { op:(typeof iTo === 'string' ? 'ping' : 'post'), etc:iEtc };
-    if (aHead.op === 'post') {
-      for (var any in iTo) break;
-      if (!any) {
-        process.nextTick(iCallback);
-        return;
-      }
-    }
-    aHead[aHead.op === 'ping' ? 'alias' : 'to'] = iTo;
+    var aHead = typeof iTo === 'string' ? {op:'ping', alias:iTo, etc:iEtc} : {op:'post', to:iTo, etc:iEtc};
     this._queue(iHost, aHead, iMsg, iCallback);
   };
 
@@ -1095,7 +1086,24 @@ var sProjects = {
     that.db = new sqlite.Database();
     that.db.open(sMainDir+'projects', function(openErr) {
       if (openErr) throw openErr;
-      that.db.exec("ATTACH '"+sMainDir+"instance' AS instance; ATTACH '"+sMainDir+"clients' AS clients;", noOpCallback, iStart);
+      var aList = [];
+      that.db.exec("ATTACH '"+sMainDir+"instance' AS instance; \
+                    ATTACH '"+sMainDir+"clients' AS clients; \
+                    BEGIN TRANSACTION; \
+                    SELECT oid, dataw AS data, service FROM project WHERE data = 'pending'; \
+                    UPDATE project SET data = NULL WHERE data = 'pending';", function(err, row) {
+        if (err) throw err;
+        if (row) aList.push(row);
+      }, fCommit);
+      function fCommit() {
+        var aRow = aList.pop();
+        if (aRow) {
+          aRow.type = 'newProject';
+          sServices.post('localhost', {}, aRow, null, fCommit); //. use default service id
+          return;
+        }
+        that.db.exec("COMMIT TRANSACTION", noOpCallback, iStart);
+      }
     });
   };
 
@@ -1255,11 +1263,12 @@ var sProjects = {
       return;
 
     case 'project':
+    case 'newProject':
       if (!that.stmt.importProject) {
         that.stmt.importProject = {
           selectInvite:  "SELECT accept FROM invite  WHERE oid = ?",
           selectProject: "SELECT oid    FROM project WHERE oid = ?",
-          insert: "INSERT INTO project VALUES ( ?, ?, ?, NULL, NULL )"
+          insert: "INSERT INTO project VALUES ( ?, ?, ?, ?, NULL )"
         };
         that.db.prepareN(that.stmt.importProject, function(err) {
           if (err) throw err;
@@ -1267,41 +1276,51 @@ var sProjects = {
         });
         return;
       }
-      if (!iReq.data || !(iReq.jso.filemap instanceof Array))
+      var aIsNew = iReq.jso.type === 'newProject';
+      if (aIsNew ? iReq.from !== sUUId : !iReq.data || !(iReq.jso.filemap instanceof Array))
         return fQuit();
-      var aOff = 0, aFiles = iReq.jso.filemap;
-      that.stmt.importProject.selectInvite.bind(1, aFiles[0].oid);
-      that.stmt.importProject.selectInvite.stepOnce(function(err, row) {
+      var aFiles = aIsNew ? [] : iReq.jso.filemap;
+      that.stmt.importProject.selectProject.bind(1, iReq.jso.oid);
+      that.stmt.importProject.selectProject.stepOnce(function(err, row) {
         if (err) throw err;
-        if (!row || !row.accept)
+        if (row)
           return fQuit();
-        that.stmt.importProject.selectProject.bind(1, aFiles[0].oid);
-        that.stmt.importProject.selectProject.stepOnce(function(err, row) {
+        if (aIsNew) {
+          var aP = new Project(iReq.jso, function() {
+            aP.finalize();
+            fFileLoop(0, 0);
+          });
+          return;
+        }
+        that.stmt.importProject.selectInvite.bind(1, iReq.jso.oid);
+        that.stmt.importProject.selectInvite.stepOnce(function(err, row) {
           if (err) throw err;
-          if (row)
+          if (!row || !row.accept)
             return fQuit();
-          fFileLoop(0);
+          fFileLoop(0, 0);
         });
       });
       function fQuit() {
         sClients.respond(iReq, {});
       }
-      function fFileLoop(fileN) {
+      function fFileLoop(fileN, offset) {
         if (fileN < aFiles.length) {
-          fs.writeFile(makePath(aFiles[fileN].oid), iReq.data.slice(aOff, aOff+aFiles[fileN].size), function(err) {
+          fs.writeFile(makePath(aFiles[fileN].oid), iReq.data.slice(offset, offset+aFiles[fileN].size), function(err) {
             if (err) throw err;
-            aOff += aFiles[fileN].size;
+            offset += aFiles[fileN].size;
             fFileLoop(++fileN);
           });
           return;
         }
         that.stmt.importProject.insert.bind(1, iReq.jso.oid);
         that.stmt.importProject.insert.bind(2, iReq.jso.service);
-        that.stmt.importProject.insert.bind(3, iReq.jso.data);
+        that.stmt.importProject.insert.bind(3, aIsNew ? null : iReq.jso.data);
+        that.stmt.importProject.insert.bind(4, aIsNew ? iReq.jso.data : null);
         that.stmt.importProject.insert.stepOnce(function(err, row) {
           if (err) throw err;
           delete iReq.jso.filemap;
           iReq.jso.data = JSON.parse(iReq.jso.data);
+          iReq.jso.type = 'project';
           sClients.notify(iReq, iReq.jso);
         });
       }
@@ -1376,23 +1395,29 @@ var sProjects = {
   sProjects.kNewSql = "\
     BEGIN TRANSACTION;\
     "+kIncrOid+";\
-    INSERT INTO project VALUES ( ("+kNewOid+"), '', NULL, '{\"name\":\"Untitled\", \"blurb\":\"something\", \"created\":\"' || datetime('now') || '\"}', '{}' );\
+    INSERT INTO project VALUES ( ("+kNewOid+"), '', 'pending', '"+JSON.stringify({name:'Untitled', blurb:'something', created:(new Date).toISOString()})+"', '{}' );\
     SELECT oid, dataw AS data, service, 1 AS installed FROM project WHERE rowid = last_insert_rowid();\
     COMMIT TRANSACTION;";
 
   sProjects.newProject = {};
   sProjects.handle_newProject = function(iReq) {
+    var that = this;
     var aProj;
-    this.db.exec(this.kNewSql, function(err, row) {
+    that.db.exec(this.kNewSql, function(err, row) {
       if (err) throw err;
       if (row) aProj = row;
     }, function() {
-      Project.list[aProj.oid] = new Project(aProj, function () {
-        sClients.project(iReq.client, aProj.oid);
-        aProj.data = JSON.parse(aProj.data);
-        delete aProj.service;
-        aProj.type = 'project';
-        sClients.notify(iReq, aProj);
+      var aEtc = { type:'newProject', oid:aProj.oid, data:aProj.data, service:aProj.service };
+      sServices.post('localhost', {}, aEtc, null, function() { //. use default service id
+        that.db.exec("UPDATE project SET data = NULL WHERE oid = '"+aProj.oid+"'", noOpCallback, function() {
+          Project.list[aProj.oid] = new Project(aProj, function () {
+            sClients.project(iReq.client, aProj.oid);
+            aProj.data = JSON.parse(aProj.data);
+            delete aProj.service;
+            aProj.type = 'project';
+            sClients.notify(iReq, aProj);
+          });
+        });
       });
     });
   };
