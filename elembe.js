@@ -425,11 +425,9 @@ function main() {
     if (sPlayback) sPlayback = aRp;
   }
   startDatabase(function() {
-    sProjects.queue.next();
-    if (sPlayback) {
-      Queue.post(sPlayback.next());
+    Queue.process();
+    if (sPlayback)
       return;
-    }
     aServer = http.createServer(httpRequest);
     aServer.listen(sHttpPort);
     var aSocket = io.listen(aServer);
@@ -1291,9 +1289,16 @@ var sProjects = {
         if (row)
           return fQuit();
         if (aIsNew) {
-          var aP = new Project(iReq.jso, function() {
-            aP.finalize();
-            fFileLoop(0, 0);
+          var aDb = new sqlite.Database();
+          var aPath = makePath(iReq.jso.oid);
+          aDb.open(aPath, function(err) {
+            if (err) throw err;
+            var aSchemaSql = createSchema(Project.prototype.kSchema, aPath);
+            aSchemaSql += "INSERT OR IGNORE INTO revision (oid, map, parents) VALUES (' ', '"+Project.prototype.revisionMapJson()+"', '{}');";
+            aDb.exec(aSchemaSql, noOpCallback, function() {
+              aDb.close();
+              fFileLoop(0, 0);
+            });
           });
           return;
         }
@@ -1312,8 +1317,7 @@ var sProjects = {
         if (fileN < aFiles.length) {
           fs.writeFile(makePath(aFiles[fileN].oid), iReq.data.slice(offset, offset+aFiles[fileN].size), function(err) {
             if (err) throw err;
-            offset += aFiles[fileN].size;
-            fFileLoop(++fileN);
+            fFileLoop(fileN+1, offset + aFiles[fileN].size);
           });
           return;
         }
