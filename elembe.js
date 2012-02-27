@@ -307,6 +307,8 @@ function Queue() {
         Queue.post(sPlayback.next());
       return;
     }
+    if (aReq.type === 'deliver' && aReq.jso.type === 'acceptInvite' && aReq.from === sUUId)
+      delete aReq.project;
     if (aReq.project && !Project.list[aReq.project]) {
       sProjects.lookup(aReq.project, function(data) {
         if (data === 'invite') {
@@ -353,6 +355,8 @@ function Queue() {
     try {
     if (!aReq.hasOwnProperty('client'))
       throw 'client';
+    if (aReq.type === 'deliver')
+      aReq.type = aReq.project ? 'projectImport' : 'importt';
     var aHandler = 'handle_'+aReq.type;
     if (aHandler in sProjects) {
       for (a in sProjects[aReq.type])
@@ -747,7 +751,7 @@ var sServices = {
     });
     iRow.conn.on('deliver', function(id, from, msg, etc) {
       var aData = typeof msg === 'undefined' ? null : msg;
-      var aReq = {type:etc.project ? 'projectImport' : 'importt', client:null, project:etc.project, from:from, jso:etc, data:aData, callback:function() { iRow.conn.ack(id, 'ok') } };
+      var aReq = {type:'deliver', client:null, project:etc.project, from:from, jso:etc, data:aData, callback:function() { iRow.conn.ack(id, 'ok') } };
       Queue.post(aReq);
     });
     iRow.conn.on('ack', function(id, type, error) {
@@ -1228,33 +1232,37 @@ var sProjects = {
     // this function must defend against attack
     // anyone on the service can send a message here with the user's alias
     var that = this;
+    if (!that.stmt.svcMsg) {
+      that.stmt.svcMsg = {
+        invite_select: "SELECT accept FROM invite WHERE oid = ?",
+        invite_insert: "INSERT OR REPLACE INTO invite VALUES ( ?, ?, ?, ?, ?, ?, NULL )",
+        invite_update: "UPDATE invite SET accept = ? WHERE oid = ?",
+        project_selectInvite:  "SELECT accept FROM invite  WHERE oid = ?",
+        project_selectProject: "SELECT oid    FROM project WHERE oid = ?",
+        project_insert: "INSERT INTO project VALUES ( ?, ?, ?, ?, NULL )"
+      };
+      that.db.prepareN(that.stmt.svcMsg, function(err) {
+        if (err) throw err;
+        that.handle_importt(iReq);
+      });
+      return;
+    }
     switch(iReq.jso.type) {
     case 'invite':
-      if (!that.stmt.importInvite) {
-        that.stmt.importInvite = {
-          select: "SELECT accept FROM invite WHERE oid = ?",
-          insert: "INSERT OR REPLACE INTO invite VALUES ( ?, ?, ?, ?, ?, ?, NULL )"
-        };
-        that.db.prepareN(that.stmt.importInvite, function(err) {
-          if (err) throw err;
-          that.handle_importt(iReq);
-        });
-        return;
-      }
-      that.stmt.importInvite.select.bind(1, iReq.jso.oid);
-      that.stmt.importInvite.select.stepOnce(function(err, row) {
+      that.stmt.svcMsg.invite_select.bind(1, iReq.jso.oid);
+      that.stmt.svcMsg.invite_select.stepOnce(function(err, row) {
         if (err) throw err;
         if (row && row.accept) {
           sClients.respond(iReq, {});
           return;
         }
-        that.stmt.importInvite.insert.bind(1, iReq.jso.date);
-        that.stmt.importInvite.insert.bind(2, iReq.jso.toAlias);
-        that.stmt.importInvite.insert.bind(3, iReq.jso.fromAlias);
-        that.stmt.importInvite.insert.bind(4, iReq.jso.oid);
-        that.stmt.importInvite.insert.bind(5, iReq.jso.service);
-        that.stmt.importInvite.insert.bind(6, iReq.jso.data);
-        that.stmt.importInvite.insert.stepOnce(function(err, row) {
+        that.stmt.svcMsg.invite_insert.bind(1, iReq.jso.date);
+        that.stmt.svcMsg.invite_insert.bind(2, iReq.jso.toAlias);
+        that.stmt.svcMsg.invite_insert.bind(3, iReq.jso.fromAlias);
+        that.stmt.svcMsg.invite_insert.bind(4, iReq.jso.oid);
+        that.stmt.svcMsg.invite_insert.bind(5, iReq.jso.service);
+        that.stmt.svcMsg.invite_insert.bind(6, iReq.jso.data);
+        that.stmt.svcMsg.invite_insert.stepOnce(function(err, row) {
           if (err) throw err;
           iReq.jso.data = JSON.parse(iReq.jso.data);
           sClients.notify(iReq, iReq.jso);
@@ -1262,26 +1270,23 @@ var sProjects = {
       });
       return;
 
+    case 'acceptInvite':
+      that.stmt.svcMsg.invite_update.bind(1, iReq.jso.date);
+      that.stmt.svcMsg.invite_update.bind(2, iReq.jso.project);
+      that.stmt.svcMsg.invite_update.stepOnce(function(err, row) {
+        if (err) throw err;
+        sClients.notify(iReq, {type:'acceptinvite', oid:iReq.jso.project, accept:iReq.jso.date});
+      });
+      return;
+
     case 'project':
     case 'newProject':
-      if (!that.stmt.importProject) {
-        that.stmt.importProject = {
-          selectInvite:  "SELECT accept FROM invite  WHERE oid = ?",
-          selectProject: "SELECT oid    FROM project WHERE oid = ?",
-          insert: "INSERT INTO project VALUES ( ?, ?, ?, ?, NULL )"
-        };
-        that.db.prepareN(that.stmt.importProject, function(err) {
-          if (err) throw err;
-          that.handle_importt(iReq);
-        });
-        return;
-      }
       var aIsNew = iReq.jso.type === 'newProject';
       if (aIsNew ? iReq.from !== sUUId : !iReq.data || !(iReq.jso.filemap instanceof Array))
         return fQuit();
       var aFiles = aIsNew ? [] : iReq.jso.filemap;
-      that.stmt.importProject.selectProject.bind(1, iReq.jso.oid);
-      that.stmt.importProject.selectProject.stepOnce(function(err, row) {
+      that.stmt.svcMsg.project_selectProject.bind(1, iReq.jso.oid);
+      that.stmt.svcMsg.project_selectProject.stepOnce(function(err, row) {
         if (err) throw err;
         if (row)
           return fQuit();
@@ -1292,8 +1297,8 @@ var sProjects = {
           });
           return;
         }
-        that.stmt.importProject.selectInvite.bind(1, iReq.jso.oid);
-        that.stmt.importProject.selectInvite.stepOnce(function(err, row) {
+        that.stmt.svcMsg.project_selectInvite.bind(1, iReq.jso.oid);
+        that.stmt.svcMsg.project_selectInvite.stepOnce(function(err, row) {
           if (err) throw err;
           if (!row || !row.accept)
             return fQuit();
@@ -1312,11 +1317,11 @@ var sProjects = {
           });
           return;
         }
-        that.stmt.importProject.insert.bind(1, iReq.jso.oid);
-        that.stmt.importProject.insert.bind(2, iReq.jso.service);
-        that.stmt.importProject.insert.bind(3, aIsNew ? null : iReq.jso.data);
-        that.stmt.importProject.insert.bind(4, aIsNew ? iReq.jso.data : null);
-        that.stmt.importProject.insert.stepOnce(function(err, row) {
+        that.stmt.svcMsg.project_insert.bind(1, iReq.jso.oid);
+        that.stmt.svcMsg.project_insert.bind(2, iReq.jso.service);
+        that.stmt.svcMsg.project_insert.bind(3, aIsNew ? null : iReq.jso.data);
+        that.stmt.svcMsg.project_insert.bind(4, aIsNew ? iReq.jso.data : null);
+        that.stmt.svcMsg.project_insert.stepOnce(function(err, row) {
           if (err) throw err;
           delete iReq.jso.filemap;
           iReq.jso.data = JSON.parse(iReq.jso.data);
@@ -1381,13 +1386,13 @@ var sProjects = {
       });
       return;
     }
-    sServices.post(iReq.service, iReq.to, {type:'acceptInvite', project:iReq.oid, uid:sUUId, alias:iReq.alias}, null, function() {
-      var aDate = (new Date).toISOString();
-      that.stmt.acceptInvite.bind(1, aDate);
+    var aEtc = {type:'acceptInvite', project:iReq.oid, uid:sUUId, alias:iReq.alias, date:(new Date).toISOString()};
+    sServices.post(iReq.service, iReq.to, aEtc, null, function() {
+      that.stmt.acceptInvite.bind(1, aEtc.date);
       that.stmt.acceptInvite.bind(2, iReq.oid);
       that.stmt.acceptInvite.stepOnce(function(err, row) {
         if (err) throw err;
-        sClients.notify(iReq, {type:'acceptinvite', oid:iReq.oid, accept:aDate});
+        sClients.notify(iReq, {type:'acceptinvite', oid:iReq.oid, accept:aEtc.date});
       });
     });
   };
@@ -1925,7 +1930,7 @@ function Project(iRecord, iCallback) {
           sClients.respond(iReq, {});
           return; //. log error
         }
-        var aMsgToAll = { type:'memberAlias', project:that.oid, uid:iReq.from, alias:iReq.jso.alias, joined:(new Date).toISOString() };
+        var aMsgToAll = { type:'memberAlias', project:that.oid, uid:iReq.from, alias:iReq.jso.alias, joined:iReq.jso.date };
         sServices.listEdit(that.service, that.oid, 'add', iReq.from, aMsgToAll, null, function() {
           sClients.respond(iReq, {});
         });
