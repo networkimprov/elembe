@@ -90,6 +90,7 @@ function noOpCallback(err, etc) {
     throw err;
 }
 
+// to add sql to transaction: createSchema(s, f).replace('\n\n', '\nSQL;\n')
 function createSchema(iSchema, iFile) {
   var aSql = '';
   for (var aDb in iSchema)
@@ -106,7 +107,7 @@ function createSchema(iSchema, iFile) {
       aSql += ");\n";
     }
   }
-  aSql += "COMMIT TRANSACTION;\n";
+  aSql += "\nCOMMIT TRANSACTION;\n";
   return aSql;
 }
 
