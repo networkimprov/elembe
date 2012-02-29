@@ -156,23 +156,36 @@ function dupFile(iSrc, iDst, iCallback) {
 }
 
 function storeFile(iPath, iBuf, iCallback) {
-  fs.open(iPath, 'w', 0600, function(err, fd) {
+  var aTemp = sMainDir+'storefile_'+storeFile.count++; //. use /tmp ?
+  fs.open(aTemp, 'w', 0600, function(err, fd) {
     if (err) return iCallback(err);
     fWrite(iBuf);
     function fWrite(buf) {
       fs.write(fd, buf, 0, buf.length, null, function(err, written) {
-        if (err) { fs.close(fd); return iCallback(err); }
+        if (err) {
+          fs.close(fd);
+          return fErr(err);
+        }
         if (written < buf.length)
           return fWrite(buf.slice(written));
         fs.fsync(fd, function(err) {
           fs.close(fd);
-          if (err) return iCallback(err);
-          syncFile(getParent(iPath), iCallback);
+          if (err) return fErr(err);
+          fs.rename(aTemp, iPath, function(err) {
+            if (err) return fErr(err);
+            syncFile(getParent(iPath), iCallback);
+          });
         });
       });
     }
+    function fErr(err) {
+      fs.unlink(aTemp);
+      iCallback(err);
+    }
   });
 }
+
+storeFile.count = 0;
 
 function syncFile(iPath, iCallback) {
   fs.open(iPath, 'r', function(err, fd) {
