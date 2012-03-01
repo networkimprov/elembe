@@ -2398,26 +2398,19 @@ console.log(partlist);
     });  
   };
 
-  Project.prototype.getMembers = function(iAppendArgs, iCallback) {
+  Project.prototype.hasMembers = function(iCallback) {
     var that = this;
-    var argv = arguments;
     if (!that.stmt.members) {
       that.db.prepare("SELECT uid FROM member WHERE left IS NULL AND uid NOT NULL AND uid != '"+sUUId+"'", function(err, stmt) {
         if (err) throw err;
         that.stmt.members = stmt;
-        that.getMembers.apply(that, argv);
+        that.hasMembers(iCallback);
       });
       return;
     }
-    that.stmt.members.results(function(err, array) {
+    that.stmt.members.stepOnce(function(err, row) {
       if (err) throw err;
-      var aToList = {};
-      for (var a=0; a < array.length; ++a)
-        aToList[array[a].uid] = true;
-      for (var a=0; a < argv.length-1; ++a)
-        if (argv[a])
-          aToList[argv[a]] = true;
-      argv[argv.length-1](aToList);
+      iCallback(!!row);
     });
   };
 
@@ -3119,17 +3112,16 @@ console.log(partlist);
       }
     }, function () {
       if (iNoSendCallback)
-        fFinish({});
+        fFinish(false);
       else
-        that.getMembers(null, fFinish);
+        that.hasMembers(fFinish);
     });
-    function fFinish(list) {
-      for (var aAny in list) break;
-      var aBufList = aAny && [];
-      aRev.list = aAny && [];
+    function fFinish(any) {
+      var aBufList = any && [];
+      aRev.list = any && [];
       that._makeDiffs(aRev.oid, aBufList, aRev.list, function() {
         aRev.type = 'revision';
-        if (!aAny)
+        if (!any)
           return fCommit();
         var aRevData = 0;
         for (var a=0; a < aRev.list.length; ++a)
