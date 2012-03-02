@@ -1308,7 +1308,7 @@ var sProjects = {
           aDb.open(aPath, function(err) {
             if (err) throw err;
             var aSchemaSql = createSchema(Project.prototype.kSchema, aPath);
-            aSchemaSql += "INSERT OR IGNORE INTO revision (oid, map, parents) VALUES (' ', '"+Project.prototype.revisionMapJson()+"', '{}');";
+            aSchemaSql += "INSERT OR IGNORE INTO revision (oid, map, parents) VALUES (' ', '"+Project.prototype.revisionMapJson('notouch')+"', '{}');";
             aDb.exec(aSchemaSql, noOpCallback, function() {
               aDb.close();
               fFileLoop(0, 0);
@@ -3081,8 +3081,8 @@ console.log(partlist);
   Project.prototype.revisionMapInit = function() {
     return {touch:null, page:{}};
   };
-  Project.prototype.revisionMapJson = function() {
-    return JSON.stringify({touch:(new Date).toISOString(), page:{}});
+  Project.prototype.revisionMapJson = function(iNoTouch) {
+    return JSON.stringify({touch:iNoTouch ? null : (new Date).toISOString(), page:{}});
   };
 
   Project.prototype.commitRevision = { autogen:true };
