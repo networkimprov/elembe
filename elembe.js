@@ -1961,7 +1961,7 @@ function Project(iRecord, iCallback) {
       that.stmt.svcMsg.revision_has.stepOnce(function(err, row) {
         if (err) throw err;
 console.log(row);
-        if (!row.hasmem || row.hasrev) {
+        if (iReq.from !== sUUId && !row.hasmem || row.hasrev) {
           sClients.respond(iReq, {});
           console.log('skip rev '+iReq.jso.oid+' from '+iReq.from);
           return;
@@ -2146,8 +2146,8 @@ console.log(partlist);
     var that = this;
     if (!that.stmt.checkConflict) {
       that.stmt.checkConflict = {
-        revision: "SELECT revision.rowid, oid, map, parents, sideline, author, member.joined \
-                    FROM revision INNER JOIN member ON author = member.uid ORDER BY revision.rowid DESC",
+        revision: "SELECT revision.rowid, oid, map, parents, sideline, author, CASE WHEN member.joined IS NULL THEN '3333' ELSE member.joined END AS joined \
+                    FROM revision LEFT JOIN member ON author = member.uid WHERE revision.rowid != 1 ORDER BY revision.rowid DESC",
         member: "SELECT joined FROM member WHERE uid = ?",
         diff: "SELECT data FROM diff WHERE revision = ? AND object = ?",
         page: "SELECT data, layout FROM page WHERE oid = ?",
@@ -2170,32 +2170,35 @@ console.log(partlist);
       that.stmt.checkConflict.member.bind(1, iRevision.author);
       that.stmt.checkConflict.member.stepOnce(function(err, author) {
         if (err) throw err;
-        that.checkConflict(iRevision, oNotify, iCallback, author.joined);
+        that.checkConflict(iRevision, oNotify, iCallback, author ? author.joined : '3333');
       });
       return;
     }
     that.stmt.checkConflict.revision.step(function(err, row) {
       if (err) throw err;
-      if (!row) throw new Error('parent not found');
       if (typeof _state === 'string') {
         _state = { conflict:[], chain:{}, parents:{}, ancestors:{}, authorJoined:_state };
         for (var a in iRevision.parents)
           _state.parents[a] = _state.ancestors[a] = iRevision.parents[a];
-        fLogConflict(iRevision, { rowid:row.rowid+1, oid:' ', map:that.revisionMap, parents:that.parentMap, author:sUUId, joined:'3333' }, 'chain');
+        fLogConflict(iRevision, { rowid:row ? row.rowid+1 : 2, oid:' ', map:that.revisionMap, parents:that.parentMap, author:sUUId, joined:'3333' }, 'chain');
       }
-      var aOidCounter = +row.oid.slice(row.oid.indexOf('.')+1);
-      row.map = JSON.parse(row.map);
-      row.parents = JSON.parse(row.parents);
-      if (aOidCounter === _state.ancestors[row.author]) {
-        _state.ancestors[row.author] = row.parents[row.author];
-        row.isParent = true;
+      if (row) {
+        var aOidCounter = +row.oid.slice(row.oid.indexOf('.')+1);
+        row.map = JSON.parse(row.map);
+        row.parents = JSON.parse(row.parents);
+        if (aOidCounter === _state.ancestors[row.author]) {
+          _state.ancestors[row.author] = row.parents[row.author];
+          row.isParent = true;
+        }
+        fLogConflict(iRevision, row, 'chain');
+        if (iRevision.parents[row.author] === 0 && !(row.author in row.parents) || aOidCounter === iRevision.parents[row.author])
+          delete _state.parents[row.author];
       }
-      fLogConflict(iRevision, row, 'chain');
-      if (iRevision.parents[row.author] === 0 && !(row.author in row.parents) || aOidCounter === iRevision.parents[row.author])
-        delete _state.parents[row.author];
       for (var any in _state.parents) break;
-      if (any)
+      if (any) {
+        if (!row) throw new Error('parent not found');
         return that.checkConflict(iRevision, oNotify, iCallback, _state);
+      }
       function fLogConflict(main, alt, chain) {
         if (chain) {
           for (var a in alt.parents) {
@@ -3111,17 +3114,11 @@ console.log(partlist);
         }
       }
     }, function () {
-      if (iNoSendCallback)
-        fFinish(false);
-      else
-        that.hasMembers(fFinish);
-    });
-    function fFinish(any) {
-      var aBufList = any && [];
-      aRev.list = any && [];
+      var aBufList = !iNoSendCallback && [];
+      aRev.list = !iNoSendCallback && [];
       that._makeDiffs(aRev.oid, aBufList, aRev.list, function() {
         aRev.type = 'revision';
-        if (!any)
+        if (iNoSendCallback)
           return fCommit();
         var aRevData = 0;
         for (var a=0; a < aRev.list.length; ++a)
@@ -3139,7 +3136,7 @@ console.log(partlist);
           fCommit(aRevData);
         });
       });
-    }
+    });
     function fCommit(revdata) {
       that.db.exec("UPDATE revision SET map = NULL, parents = '"+JSON.stringify(that.parentMap)+"' WHERE oid = ' ';\
                     RELEASE commit_revision;", noOpCallback, function () {
@@ -3199,9 +3196,14 @@ console.log(partlist);
       _done.pt = {};
     }
     if (iRev)
-      sServices.listPost(that.service, that.oid, iRev, iRevData, function() {
-        fs.unlink(sSendDir+iRev.oid, noOpCallback);
-        fUpdate();
+      that.hasMembers(function(any) {
+        var aTo = {};
+        if (any)
+          aTo[that.oid] = 2;
+        sServices.post(that.service || 'localhost', aTo, iRev, iRevData, function() { //. use default service name
+          fs.unlink(sSendDir+iRev.oid, noOpCallback);
+          fUpdate();
+        });
       });
     else
       fUpdate();
