@@ -1967,7 +1967,7 @@ console.log(row);
           return;
         }
         that.db.exec("BEGIN TRANSACTION", noOpCallback, function() {
-          aNotify = [ iReq.jso ];
+          aNotify = [];
           for (var a in that.parentMap)
             if (!(a in iReq.jso.parents))
               iReq.jso.parents[a] = 0;
@@ -2067,6 +2067,7 @@ console.log(partlist);
             fDone();
           function fDone() {
             delete iReq.jso.list;
+            aNotify.push(iReq.jso);
             sClients.notify(iReq, aNotify, that.oid);
           }
         });
