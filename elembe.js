@@ -572,13 +572,19 @@ var kFileMap = {
   '/applaunch':'client/applaunch.xpi',
   '/test':'dbtest.html',
   '/part':'part',
-  '/sync':'sync'
+  '/sync':'sync',
+  '/exit':'exit'
 };
 var kTypeMap = { js:'text/javascript', css:'text/css', html:'text/html', xpi:'application/x-xpinstall' };
 
 function httpRequest(req, res) {
   var aUrl = url.parse(req.url, true), aFile = kFileMap[aUrl.pathname];
-  if (aFile === 'sync') {
+  if (aFile === 'exit') {
+    if (aUrl.search === '?ok')
+      Queue.pause(function() { process.exit(0) });
+    else
+      process.exit(1);
+  } else if (aFile === 'sync') {
     sProjects.syncTo(aUrl.query || {}, function(status, data, size) {
       if (status !== 200 || !data) {
         res.writeHead(status);
