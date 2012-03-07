@@ -197,15 +197,18 @@ function syncFile(iPath, iCallback) {
   });
 }
 
-function RecordPlayback(iType, iFile) {
+function RecordPlayback(iFile) {
   try {
-  this.fd = fs.openSync(iFile, iType === 'record' ? 'a' : 'r', 0600);
+    if (typeof iFile === 'string') {
+      this.fd = fs.openSync(iFile, 'a', 0600);
+    } else {
+      this.fd = fs.openSync(iFile.shift(), 'r', 0600);
+      this.file = iFile;
+      this.buf = new Buffer(256*256);
+    }
   } catch (err) {
-    this.error = 'RecordPlayback '+iFile+' error: '+err.message;
-    return;
+    this.error = 'record/playback error: '+err.message;
   }
-  if (iType === 'playback')
-    this.buf = new Buffer(256*256);
 }
 
   RecordPlayback.prototype.save = function(iReq) {
@@ -229,11 +232,18 @@ function RecordPlayback(iType, iFile) {
 
   RecordPlayback.prototype.next = function() {
     var that = this;
-    var aGot = fs.readSync(that.fd, that.buf, 0, 4, null);
-    if (aGot === 0) {
+    for (var aGot; !(aGot = fs.readSync(that.fd, that.buf, 0, 4, null)); ) {
       fs.closeSync(that.fd);
-      console.log('playback complete');
-      process.exit(0);
+      if (that.file.length === 0) {
+        console.log('playback complete');
+        process.exit(0);
+      }
+      try {
+        that.fd = fs.openSync(that.file.shift(), 'r', 0600);
+      } catch (err) {
+        console.log('playback error: '+err.message);
+        process.exit(1);
+      }
     }
     var aLen = parseInt(that.buf.toString('ascii', 0, 4), 16);
     aGot = fs.readSync(that.fd, that.buf, 0, aLen, null);
@@ -408,21 +418,28 @@ var sNodeOffset;
 var sRecord = null;
 var sPlayback = null;
 
-function main() {
-  function fExcluded() { return sRecord || sPlayback ? true : false }
-  for (var a=2; a < process.argv.length; ++a) {
-    switch (process.argv[a]) {
-    case 'record':   ++a; if (!fExcluded()) sRecord   = process.argv[a]; break;
-    case 'playback': ++a; if (!fExcluded()) sPlayback = process.argv[a]; break;
+function main(argv) {
+  for (var a=2; a < argv.length; ++a) {
+    var aOp = argv[a];
+    switch (argv[a]) {
+    case 'record':   ++a; if (!fExcluded()) sRecord   =  argv[a];  break;
+    case 'playback': ++a; if (!fExcluded()) sPlayback = [argv[a]]; break;
     case 'alt':
-      sMainDir = sMainDir.replace('/', '-'+process.argv[++a]+'/');
-      sHttpPort = +process.argv[++a];
+      sMainDir = sMainDir.replace('/', '-'+argv[++a]+'/');
+      sHttpPort = +argv[++a];
       break;
     default:
-      console.log('unknown command option '+process.argv[a]);
-      return;
+      if (aLastOp === 'playback') {
+        sPlayback.push(argv[a]);
+        continue;
+      } else {
+        console.log('unknown command option '+argv[a]);
+        process.exit(1);
+      }
     }
+    var aLastOp = aOp;
   }
+  function fExcluded() { return sRecord || sPlayback ? true : false }
 
   sRevisionCache = sMainDir+sRevisionCache;
   sEditCache     = sMainDir+sEditCache;
@@ -430,10 +447,10 @@ function main() {
   sInbound       = sMainDir+sInbound;
 
   if (sRecord || sPlayback) {
-    var aRp = new RecordPlayback(sRecord ? 'record' : 'playback', sRecord || sPlayback);
+    var aRp = new RecordPlayback(sRecord || sPlayback);
     if (aRp.error) {
       console.log(aRp.error);
-      return;
+      process.exit(1);
     }
     if (sRecord) sRecord = aRp;
     if (sPlayback) sPlayback = aRp;
@@ -3298,8 +3315,8 @@ var sClients = {
       Queue.process(iReq.project);
   };
 
-// main
-main();
+// start the app!
+main(process.argv);
 
 
 /* cache mgmt
