@@ -19,8 +19,17 @@ http.IncomingMessage.prototype.pipe =
 fs.ReadStream.prototype.pipe = 
   function(to) { sys.pump(this, to, noOpCallback) };
 
+var kSchemaV = {
+  instance: '2012-03-07T00:07:44Z',
+  services: '2012-03-07T00:07:44Z',
+  projects: '2012-03-07T00:07:44Z',
+  clients:  '2012-03-07T00:07:44Z',
+  filename: null // Project db, defined below
+};
+
 var kSchema = {
   instance: {
+    schemav: { v: 'text' },
     instance: {
       uuid: 'text',
       offset: 'integer',
@@ -28,6 +37,7 @@ var kSchema = {
     }
   },
   services: {
+    schemav: { v: 'text' },
     service: {
       host: 'text unique', // domain name
       nodeid: 'text',
@@ -39,6 +49,7 @@ var kSchema = {
     }
   },
   projects: {
+    schemav: { v: 'text' },
     project: {
       oid: 'text unique',
       service: 'text',
@@ -57,6 +68,7 @@ var kSchema = {
     }
   },
   clients: {
+    schemav: { v: 'text' },
     clientnav: {
       client: 'text unique',    // mac addr
       data: 'text'   // json { ... }
@@ -105,6 +117,10 @@ function createSchema(iSchema, iFile) {
         aComma = ',';
       }
       aSql += ");\n";
+    }
+    if (aTb) {
+      aTb = null;
+      aSql += "INSERT OR IGNORE INTO "+aDb+".schemav (rowid, v) VALUES (1, '"+kSchemaV[aDb]+"');\n";
     }
   }
   aSql += "\nCOMMIT TRANSACTION;\n";
@@ -1849,10 +1865,13 @@ function Project(iRecord, iCallback) {
     delete Project.list[this.oid];
   };
 
+  kSchemaV.filename = '2012-03-07T00:07:44Z';
+
   Project.prototype.kSchema = {
     instance: {},
     projects: {},
     filename: {
+      schemav: { v: 'text' },
       page: {
         oid: 'text unique',
         data: 'text',     // json { name:'', added:'date' }
