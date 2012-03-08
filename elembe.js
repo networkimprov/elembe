@@ -433,6 +433,7 @@ var sUUId;
 var sNodeOffset;
 var sRecord = null;
 var sPlayback = null;
+var sUpdate = false;
 
 function main(argv) {
   for (var a=2; a < argv.length; ++a) {
@@ -440,6 +441,7 @@ function main(argv) {
     switch (argv[a]) {
     case 'record':   ++a; if (!fExcluded()) sRecord   =  argv[a];  break;
     case 'playback': ++a; if (!fExcluded()) sPlayback = [argv[a]]; break;
+    case 'update':        if (!fExcluded()) sUpdate   = true;      break;
     case 'alt':
       sMainDir = sMainDir.replace('/', '-'+argv[++a]+'/');
       sHttpPort = +argv[++a];
@@ -455,13 +457,19 @@ function main(argv) {
     }
     var aLastOp = aOp;
   }
-  function fExcluded() { return sRecord || sPlayback ? true : false }
+  function fExcluded() { return sRecord || sPlayback || sUpdate ? true : false }
 
   sRevisionCache = sMainDir+sRevisionCache;
   sEditCache     = sMainDir+sEditCache;
   sSendDir       = sMainDir+sSendDir;
   sInbound       = sMainDir+sInbound;
 
+  if (sUpdate) {
+    updateSchema(function() {
+      process.exit(0);
+    });
+    return;
+  }
   if (sRecord || sPlayback) {
     var aRp = new RecordPlayback(sRecord || sPlayback);
     if (aRp.error) {
@@ -597,6 +605,37 @@ function clearDirectories(iLater) {
     else
       fs.renameSync(sMainDir, sMainDir.replace('/', '_tmp/'));
   }
+}
+
+function updateSchema(iCallback) {
+  fs.statSync(sMainDir+'instance');
+  var aDb = new sqlite.Database();
+  aDb.open(sMainDir+'instance', function(err) {
+    if (err) throw err;
+    var aSql = createSchema(kSchema);
+    aDb.exec(aSql, noOpCallback, function() {
+      aDb.prepare("SELECT oid FROM projects.project", function(err, stmt) {
+        if (err) throw err;
+        stmt.results(function(err, list) {
+          if (err) throw err;
+          var aSchema = {filename:Project.prototype.kSchema.filename};
+          fProject(0);
+          function fProject(projN) {
+            if (projN < list.length) {
+              aSql = createSchema(aSchema, getPath(list[projN].oid));
+              aSql += "DETACH filename;\n";
+              aDb.exec(aSql, noOpCallback, function() {
+                fProject(++projN);
+              });
+              return;
+            }
+            aDb.close();
+            iCallback();
+          }
+        });
+      });
+    });
+  });
 }
 
 var kFileMap = {
