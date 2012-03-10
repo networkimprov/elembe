@@ -43,7 +43,7 @@ function main(argv) {
     var aCmd = 
       (aHasNext ? 'cp -r '+aNext+' '+sData+';' : '')+'\
       echo starting elembe on port '+sPort+'; \
-      node elembe.js alt '+sDataArg+' '+sPort+' record '+sRecording+'; \
+      node elembe.js -data '+sDataArg+' -port '+sPort+' -rec '+sRecording+'; \
       mkdir '+aTest+'; \
       mv '+sRecording+' '+aTest+';\n'+
       (aHasNext ? 'mv '+aNext+' '+aTest+'/'+sData+';' : '')+' \
@@ -78,7 +78,7 @@ function main(argv) {
         }
         var aCmd = '\
           cp -r '+aNodeDir+aData+' '+sData+'; \
-          node elembe.js alt '+sDataArg+' '+sPort+' update; \
+          node elembe.js -data '+sDataArg+' -port '+sPort+' -updt; \
           rm -r '+aNodeDir+aData+'; \
           mv '+sData+' '+aNodeDir+aData+'; \
           echo updated '+aNode[nodeN]+' '+aTest[testN]+';';
@@ -115,7 +115,7 @@ function main(argv) {
     if (!aStartData) return console.log('test '+aFirst+' not found in '+aNode);
     var aCmd =
       (stat(aStartData) ? 'cp -r '+aStartData+' . ;' : '')+' \
-      node elembe.js alt '+sDataArg+' '+sPort+' playback '+aTests+';';
+      node elembe.js -data '+sDataArg+' -port '+sPort+' -play '+aTests+';';
     run(aCmd, function(exitcode) {
       if (stat(sData))
         run('rm -r '+sData, function(){});

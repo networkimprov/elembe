@@ -439,15 +439,13 @@ function main(argv) {
   for (var a=2; a < argv.length; ++a) {
     var aOp = argv[a];
     switch (argv[a]) {
-    case 'record':   ++a; if (!fExcluded()) sRecord   =  argv[a];  break;
-    case 'playback': ++a; if (!fExcluded()) sPlayback = [argv[a]]; break;
-    case 'update':        if (!fExcluded()) sUpdate   = true;      break;
-    case 'alt':
-      sMainDir = sMainDir.replace('/', '-'+argv[++a]+'/');
-      sHttpPort = +argv[++a];
-      break;
+    case '-rec':  ++a; if (!fExcluded()) sRecord   =  argv[a];            break;
+    case '-play': ++a; if (!fExcluded()) sPlayback = [argv[a]];           break;
+    case '-updt':      if (!fExcluded()) sUpdate   = true;                break;
+    case '-data': ++a; sMainDir = sMainDir.replace('/', '-'+argv[a]+'/'); break;
+    case '-port': ++a; sHttpPort = +argv[a];                              break;
     default:
-      if (aLastOp === 'playback') {
+      if (aLastOp === '-play') {
         sPlayback.push(argv[a]);
         continue;
       } else {
