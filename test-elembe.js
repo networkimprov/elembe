@@ -17,6 +17,8 @@ var sData = 'data-test';
 var sDataArg = sData.slice(5);
 var sPort = 8999;
 
+process.on('SIGINT', function() {});
+
 function main(argv) {
   argv.shift();
   mkdir(sDir);
