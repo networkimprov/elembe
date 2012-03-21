@@ -5,7 +5,6 @@ var fs = require('fs');
 var http = require('http');
 var url = require('url');
 var child = require('child_process');
-var Buffer = require('buffer').Buffer;
 
 var sqlite = require('./sqliteplus');
 var xd = require('./xdelta');
