@@ -1957,7 +1957,7 @@ function Project(iRecord, iCallback) {
         revision_insert: "INSERT INTO revision VALUES (?, ?, ?, ?, ?, ?)",
         revision_insertDiff: "INSERT INTO diff VALUES ( ?1, ?3, ?2 )",
         revision_updateParentMap: "UPDATE revision SET parents = ? WHERE oid = ' '",
-        revision_updateProject: "UPDATE projects.project SET data = ? WHERE oid = '"+that.oid+"'",
+        revision_updateProject: "UPDATE projects.project SET data = ?, dataw = NULL WHERE oid = '"+that.oid+"'",
         revision_selectPage: "SELECT data, layout FROM page WHERE oid = ?",
         revision_insertPage: "INSERT OR REPLACE INTO page VALUES (?, ?, ?, ?, ?)"
       };
