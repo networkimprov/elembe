@@ -1353,6 +1353,7 @@ var sProjects = {
         that.stmt.svcMsg.invite_insert.bind(7, iReq.jso.data);
         that.stmt.svcMsg.invite_insert.stepOnce(function(err, row) {
           if (err) throw err;
+          iReq.jso.from = iReq.from;
           iReq.jso.data = JSON.parse(iReq.jso.data);
           sClients.notify(iReq, iReq.jso);
         });
