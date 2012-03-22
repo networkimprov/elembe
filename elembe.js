@@ -58,6 +58,7 @@ var kSchema = {
     },
     invite: {
       date: 'text',   // iso/utc time
+      from: 'text',   // uid
       toAlias: 'text',
       fromAlias: 'text',
       oid: 'text unique',
@@ -1322,7 +1323,7 @@ var sProjects = {
     if (!that.stmt.svcMsg) {
       that.stmt.svcMsg = {
         invite_select: "SELECT accept FROM invite WHERE oid = ?",
-        invite_insert: "INSERT OR REPLACE INTO invite VALUES ( ?, ?, ?, ?, ?, ?, NULL )",
+        invite_insert: "INSERT OR REPLACE INTO invite VALUES ( ?, ?, ?, ?, ?, ?, ?, NULL )",
         invite_update: "UPDATE invite SET accept = ? WHERE oid = ?",
         project_selectInvite:  "SELECT accept FROM invite  WHERE oid = ?",
         project_selectProject: "SELECT oid    FROM project WHERE oid = ?",
@@ -1344,11 +1345,12 @@ var sProjects = {
           return;
         }
         that.stmt.svcMsg.invite_insert.bind(1, iReq.jso.date);
-        that.stmt.svcMsg.invite_insert.bind(2, iReq.jso.toAlias);
-        that.stmt.svcMsg.invite_insert.bind(3, iReq.jso.fromAlias);
-        that.stmt.svcMsg.invite_insert.bind(4, iReq.jso.oid);
-        that.stmt.svcMsg.invite_insert.bind(5, iReq.jso.service);
-        that.stmt.svcMsg.invite_insert.bind(6, iReq.jso.data);
+        that.stmt.svcMsg.invite_insert.bind(2, iReq.from);
+        that.stmt.svcMsg.invite_insert.bind(3, iReq.jso.toAlias);
+        that.stmt.svcMsg.invite_insert.bind(4, iReq.jso.fromAlias);
+        that.stmt.svcMsg.invite_insert.bind(5, iReq.jso.oid);
+        that.stmt.svcMsg.invite_insert.bind(6, iReq.jso.service);
+        that.stmt.svcMsg.invite_insert.bind(7, iReq.jso.data);
         that.stmt.svcMsg.invite_insert.stepOnce(function(err, row) {
           if (err) throw err;
           iReq.jso.data = JSON.parse(iReq.jso.data);
@@ -1479,8 +1481,10 @@ var sProjects = {
       });
       return;
     }
+    var aTo = {};
+    aTo[iReq.to] = 0;
     var aEtc = {type:'acceptInvite', project:iReq.oid, uid:sUUId, alias:iReq.alias, date:(new Date).toISOString()};
-    sServices.post(iReq.service, iReq.to, aEtc, null, function() {
+    sServices.post(iReq.service, aTo, aEtc, null, function() {
       that.stmt.acceptInvite.bind(1, aEtc.date);
       that.stmt.acceptInvite.bind(2, iReq.oid);
       that.stmt.acceptInvite.stepOnce(function(err, row) {
@@ -2025,7 +2029,7 @@ function Project(iRecord, iCallback) {
           console.log('got acceptInvite for invalid member: '+sys.inspect(row))
           sClients.respond(iReq, {});
           return; //. log error
-        }
+        }console.log('got acceptInvite');
         var aMsgToAll = { type:'memberAlias', project:that.oid, uid:iReq.from, alias:iReq.jso.alias, joined:iReq.jso.date };
         sServices.listEdit(that.service, that.oid, 'add', iReq.from, aMsgToAll, null, function() {
           sClients.respond(iReq, {});

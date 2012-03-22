@@ -116,7 +116,7 @@ suae.registerApp(
     if (aRec.accept)
       return;
     var that = this;
-    suae.request({type:'acceptInvite', oid:aRec.oid, service:aRec.service, to:aRec.fromAlias, alias:aRec.toAlias}, function(jso) {});
+    suae.request({type:'acceptInvite', oid:aRec.oid, service:aRec.service, to:aRec.from, alias:aRec.toAlias}, function(jso) {});
   } 
 
   /*paletteEvent: function(iPal, iName, iValue) {
