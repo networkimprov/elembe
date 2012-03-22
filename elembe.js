@@ -1685,14 +1685,14 @@ var sProjects = {
             syncFile(aFile+'-sync', fRename);
             syncFile(getParent(aFile), fRename);
             var aCount = 2;
-            fGet(list, idx+1);
             function fRename(err) {
               if (err && err.errno !== process.ENOENT) throw err;
-              if (--aCount > 0 || !sProjects.syncFromData)
+              if (--aCount > 0)
                 return;
               fs.renameSync(aFile+'-sync', aFile);
               aSent += +aResp.headers['content-length'];
               sClients.notify(null, {type:'linkprogress', ratio:aSent/sProjects.syncFromData.size});
+              fGet(list, idx+1);
             }
           });
         });
