@@ -1845,17 +1845,11 @@ function Project(iRecord, iCallback) {
   that.db.open(aPath, function(openErr) {
     if (openErr) throw openErr;
     var aSchemaSql = createSchema(that.kSchema, aPath);
-    aSchemaSql += "SELECT 1 AS haspage FROM page LIMIT 1;\
-      SELECT oid, map FROM revision WHERE oid LIKE '!%';";
-    var aHasPage, aRevPending;
+    aSchemaSql += "SELECT oid, map FROM revision WHERE oid LIKE '!%';";
+    var aRevPending;
     that.db.exec(aSchemaSql, function(err, row) {
       if (err) throw err;
-      if (row) {
-        if (row.haspage)
-          aHasPage = true;
-        else
-          aRevPending = row;
-      }
+      if (row) aRevPending = row;
     }, function () {
       if (/^#autogen/.test(iRecord.oid)) {
         that.queue.next();
@@ -1889,10 +1883,7 @@ function Project(iRecord, iCallback) {
         }
       }, function() {
         that.queue.next();
-        if (aHasPage)
-          iCallback();
-        else
-          that.handle_newPage(null, iCallback);
+        iCallback();
       });
     }
   });
@@ -2648,6 +2639,7 @@ console.log(partlist);
     var that = this;
     if (!that.stmt.subscribe) {
       that.stmt.subscribe = {
+        hasPage: "SELECT 1 AS haspage FROM page LIMIT 1",
         pageList: "SELECT oid, CASE WHEN dataw IS NULL THEN data ELSE dataw END AS data FROM page",
         memberList: "SELECT alias, joined, left, uid, uid='"+sUUId+"' AS useralias FROM member",
         revisionList: "SELECT * FROM revision WHERE oid != ' ' ORDER BY date",
@@ -2661,24 +2653,33 @@ console.log(partlist);
       return;
     }
     sClients.project(iReq.client, this.oid);
-    that.stmt.subscribe.pageList.results('data', function(errP, page) {
-      that.stmt.subscribe.memberList.results(function(errM, member) {
-        that.stmt.subscribe.revisionList.results('map', function(errR, revision) {
-          if (errP || errM || errR) throw errP || errM || errR;
-          var aResult = { service:that.service, page:page, member:member, revision:revision, state:null, data:null };
-          that.stmt.subscribe.getState.bind(1, iReq.client);
-          that.stmt.subscribe.getState.stepOnce(function(stepErr, row) {
-            if (stepErr) throw stepErr;
-            aResult.state = row ? JSON.parse(row.state) : null;
-            that.stmt.subscribe.getProjectData.stepOnce(function(err, row) {
-              if (err) throw err;
-              aResult.data = JSON.parse(row.data);
-              sClients.respond(iReq, aResult);
+    that.stmt.subscribe.hasPage.stepOnce(function(err, row) {
+      if (err) throw err;
+      if (!row)
+        that.handle_newPage(null, fResults);
+      else
+        fResults();
+    });
+    function fResults() {
+      that.stmt.subscribe.pageList.results('data', function(errP, page) {
+        that.stmt.subscribe.memberList.results(function(errM, member) {
+          that.stmt.subscribe.revisionList.results('map', function(errR, revision) {
+            if (errP || errM || errR) throw errP || errM || errR;
+            var aResult = { service:that.service, page:page, member:member, revision:revision, state:null, data:null };
+            that.stmt.subscribe.getState.bind(1, iReq.client);
+            that.stmt.subscribe.getState.stepOnce(function(stepErr, row) {
+              if (stepErr) throw stepErr;
+              aResult.state = row ? JSON.parse(row.state) : null;
+              that.stmt.subscribe.getProjectData.stepOnce(function(err, row) {
+                if (err) throw err;
+                aResult.data = JSON.parse(row.data);
+                sClients.respond(iReq, aResult);
+              });
             });
           });
         });
       });
-    });
+    }
   };
 
   Project.prototype.write = { autogen:true, data:true };
