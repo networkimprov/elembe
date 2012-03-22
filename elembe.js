@@ -106,21 +106,21 @@ function noOpCallback(err, etc) {
 function createSchema(iSchema, iFile) {
   var aSql = '';
   for (var aDb in iSchema)
-    aSql += "ATTACH '"+(aDb === 'filename' ? iFile : sMainDir+aDb)+"' AS "+aDb+";\n";
+    aSql += "ATTACH '"+(aDb === 'filename' ? iFile : sMainDir+aDb)+"' AS ["+aDb+"];\n";
   aSql += "BEGIN TRANSACTION;\n";
   for (var aDb in iSchema) {
     for (var aTb in iSchema[aDb]) {
-      aSql += "CREATE TABLE IF NOT EXISTS "+aDb+"."+aTb+" (";
+      aSql += "CREATE TABLE IF NOT EXISTS ["+aDb+"].["+aTb+"] (";
       var aComma = '';
       for (var aCl in iSchema[aDb][aTb]) {
-        aSql += aComma + aCl +' '+ iSchema[aDb][aTb][aCl];
-        aComma = ',';
+        aSql += aComma +(aCl && '['+aCl+'] ')+ iSchema[aDb][aTb][aCl];
+        aComma = ' , ';
       }
       aSql += ");\n";
     }
     if (aTb) {
       aTb = null;
-      aSql += "INSERT OR IGNORE INTO "+aDb+".schemav (rowid, v) VALUES (1, '"+kSchemaV[aDb]+"');\n";
+      aSql += "INSERT OR IGNORE INTO ["+aDb+"].schemav (rowid, v) VALUES (1, '"+kSchemaV[aDb]+"');\n";
     }
   }
   aSql += "\nCOMMIT TRANSACTION;\n";
@@ -1210,7 +1210,7 @@ var sProjects = {
   sProjects.handle_getClientNav = function(iReq) {
     var that = this;
     if (!that.stmt.getClientNav) {
-      that.db.prepare("SELECT data FROM clients.clientNav WHERE client = ?", function(prepErr, stmt) {
+      that.db.prepare("SELECT data FROM clients.clientnav WHERE client = ?", function(prepErr, stmt) {
         if (prepErr) throw prepErr;
         that.stmt.getClientNav = stmt;
         that.handle_getClientNav(iReq);
@@ -1931,7 +1931,7 @@ function Project(iRecord, iCallback) {
         object: 'text', // oid
         revision: 'text', // oid
         data: 'blob',
-        ' ': 'primary key ( object, revision )'
+        '': 'primary key ( object, revision )'
       },
       message: {
         date: 'text',      // iso/utc time

@@ -34,7 +34,10 @@ sqlite.Database.finalizeN = function(ioSet) {
 sqlite.Database.prototype.exec = function(iSql, iRowCallback, iDoneCallback) {
   var that = this;
   that.prepare(iSql, function(err, stmt) {
-    if (err) return iRowCallback(err);
+    if (err) {
+      err.sql = iSql;
+      return iRowCallback(err);
+    }
     stmt.step(fStepCall);
     function fStepCall(stepErr, row) {
       if (stepErr)
