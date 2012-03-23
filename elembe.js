@@ -1495,18 +1495,16 @@ var sProjects = {
     });
   };
 
-  sProjects.kNewSql = "\
-    BEGIN TRANSACTION;\
-    "+kIncrOid+";\
-    INSERT INTO project VALUES ( ("+kNewOid+"), '', 'pending', '"+JSON.stringify({name:'Untitled', blurb:'something', created:(new Date).toISOString()})+"', '{}' );\
-    SELECT oid, dataw AS data, service, 1 AS installed FROM project WHERE rowid = last_insert_rowid();\
-    COMMIT TRANSACTION;";
-
   sProjects.newProject = {};
   sProjects.handle_newProject = function(iReq) {
     var that = this;
-    var aProj;
-    that.db.exec(this.kNewSql, function(err, row) {
+    var aProj = "\
+      BEGIN TRANSACTION;\
+      "+kIncrOid+";\
+      INSERT INTO project VALUES ( ("+kNewOid+"), '', 'pending', '"+JSON.stringify({name:'Untitled', blurb:'something', created:(new Date).toISOString()})+"', '{}' );\
+      SELECT oid, dataw AS data, service, 1 AS installed FROM project WHERE rowid = last_insert_rowid();\
+      COMMIT TRANSACTION;";
+    that.db.exec(aProj, function(err, row) {
       if (err) throw err;
       if (row) aProj = row;
     }, function() {
@@ -2565,15 +2563,23 @@ console.log(partlist);
   Project.prototype.setUseralias = { autogen:true, alias:true };
   Project.prototype.handle_setUseralias = function(iReq) {
     var that = this;
-    var aUpdt = { type:'memberAlias', project:that.oid, alias:iReq.alias, uid:sUUId };
-    sServices.listPostAll(that.service, that.oid, aUpdt, null, function() {
-      that.db.exec("BEGIN TRANSACTION;\
-                    INSERT OR IGNORE INTO member VALUES ( '"+sUUId+"', '"+iReq.alias+"', '"+(new Date).toISOString()+"', NULL );\
+    if (that.oid.slice(0, that.oid.indexOf('.')) === sUUId)
+      that.stmt.subscribe.getProjectData.stepOnce(fNext); // assumes a client has done handle_subscribe()
+    else
+      fNext();
+    function fNext(err, row) {
+      if (err) throw err;
+      var aUpdt = { type:'memberAlias', project:that.oid, alias:iReq.alias, uid:sUUId, joined:row && JSON.parse(row.data).created };
+      sServices.listPostAll(that.service, that.oid, aUpdt, null, function() {
+        var aSql = "BEGIN TRANSACTION;\
+                    INSERT OR IGNORE INTO member VALUES ( '"+sUUId+"', '"+iReq.alias+"', '"+aUpdt.joined+"', NULL );\
                     UPDATE member SET alias = '"+iReq.alias+"' WHERE uid = '"+sUUId+"';\
-                    COMMIT TRANSACTION;", noOpCallback, function() {
-        sClients.notify(iReq, {type:'setuseralias', alias:iReq.alias}, that.oid);
+                    COMMIT TRANSACTION;";
+        that.db.exec(aSql, noOpCallback, function() {
+          sClients.notify(iReq, {type:'setuseralias', alias:iReq.alias}, that.oid);
+        });
       });
-    });
+    }
   };
 
   Project.prototype.addMember = { autogen:true, alias:true };
