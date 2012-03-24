@@ -769,6 +769,8 @@ var sServices = {
       });
       return;
     }
+    if (!Project.prototype.service)
+      Project.setDefaultService(iRow.host);
     this.s[iRow.host] = iRow;
     iRow.timer = null;
     iRow.msgHead = null;
@@ -1189,9 +1191,9 @@ var sProjects = {
       }, fCommit);
       function fCommit() {
         var aRow = aList.pop();
-        if (aRow) {
+        if (aRow && Project.prototype.service) {
           aRow.type = 'newProject';
-          sServices.post('localhost', {}, aRow, null, fCommit); //. use default service id
+          sServices.post(Project.prototype.service, {}, aRow, null, fCommit);
           return;
         }
         that.db.exec("COMMIT TRANSACTION", noOpCallback, iStart);
@@ -1502,25 +1504,28 @@ var sProjects = {
       BEGIN TRANSACTION;\
       "+kIncrOid+";\
       INSERT INTO project VALUES ( ("+kNewOid+"), '', 'pending', '"+JSON.stringify({name:'Untitled', blurb:'something', created:(new Date).toISOString()})+"', '{}' );\
-      SELECT oid, dataw AS data, service, 1 AS installed FROM project WHERE rowid = last_insert_rowid();\
+      SELECT oid, dataw AS data, service FROM project WHERE rowid = last_insert_rowid();\
       COMMIT TRANSACTION;";
     that.db.exec(aProj, function(err, row) {
       if (err) throw err;
       if (row) aProj = row;
     }, function() {
-      var aEtc = { type:'newProject', oid:aProj.oid, data:aProj.data, service:aProj.service };
-      sServices.post('localhost', {}, aEtc, null, function() { //. use default service id
-        that.db.exec("UPDATE project SET data = NULL WHERE oid = '"+aProj.oid+"'", noOpCallback, function() {
-          Project.list[aProj.oid] = new Project(aProj, function () {
-            sClients.project(iReq.client, aProj.oid);
-            aProj.data = JSON.parse(aProj.data);
-            delete aProj.service;
-            aProj.type = 'project';
-            sClients.notify(iReq, aProj);
-          });
+      if (!Project.prototype.service)
+        return fNext();
+      aProj.type = 'newProject';
+      sServices.post(Project.prototype.service, {}, aProj, null, fNext);
+    });
+    function fNext() {
+      that.db.exec("UPDATE project SET data = NULL WHERE oid = '"+aProj.oid+"'", noOpCallback, function() {
+        Project.list[aProj.oid] = new Project(aProj, function () {
+          sClients.project(iReq.client, aProj.oid);
+          aProj.data = JSON.parse(aProj.data);
+          delete aProj.service;
+          aProj.type = 'project';
+          sClients.notify(iReq, aProj);
         });
       });
-    });
+    }
   };
 
   sProjects.readyAttachment = { uri:true, doctype:true };
@@ -1831,7 +1836,8 @@ var sProjects = {
 
 function Project(iRecord, iCallback) {
   this.oid = iRecord.oid;
-  this.service = iRecord.service;
+  if (iRecord.service)
+    this.service = iRecord.service;
   this.revisionMap = null;
   this.parentMap = null;
   this.stmt = {};
@@ -1888,6 +1894,15 @@ function Project(iRecord, iCallback) {
 }
 
   Project.list = {};
+
+  Project.setDefaultService = function(iHost) {
+    Project.prototype.service = iHost;
+    for (var a in Project.list)
+      if (!Project.list[a].hasOwnProperty('service'))
+        sClients.notify(null, {type:'setservice', service:iHost}, a);
+  };
+
+  Project.prototype.service = null;
 
   Project.prototype.finalize = function() {
     sqlite.Database.finalizeN(this.stmt);
@@ -2595,30 +2610,34 @@ console.log(partlist);
     }
     if (!that.service)
       return sClients.respond(iReq, {error:'addMember requires an active service'});
-    var aUseralias;
+    var aUseralias, aInvite;
     that.db.exec("SELECT alias FROM member WHERE uid = '"+sUUId+"'", function(err, row) {
       if (err) throw err;
       if (row) aUseralias = row.alias;
     }, function() {
       if (!aUseralias || !sServices.hasAlias(that.service, aUseralias))
         return sClients.respond(iReq, {error:'addMember requires a user alias'});
-      var aInvite;
-      that.db.exec("SELECT service, data FROM projects.project WHERE oid='"+that.oid+"'", function(err, row) {
+      that.db.exec("SELECT data FROM projects.project WHERE oid='"+that.oid+"'", function(err, row) {
         if (err) throw err;
         if (row) aInvite = { type:'invite', date:(new Date).toISOString(), toAlias:iReq.alias, fromAlias:aUseralias,
-                             oid:that.oid, service:row.service, data:row.data };
+                             oid:that.oid, service:that.service, data:row.data };
       }, function() {
         if (!aInvite.data)
           return sClients.respond(iReq, {error:'addMember requires a project with a revision'});
-        sServices.post(aInvite.service, iReq.alias, aInvite, null, function() {
-          var aDate = (new Date).toISOString();
-          that.stmt.addMember.bind(1, iReq.alias);
-          that.stmt.addMember.bind(2, aDate);
-          that.stmt.addMember.stepOnce(function(stepErr, row) {
-            if (stepErr) throw stepErr;
-            sClients.notify(iReq, {type:'memberalias', alias:iReq.alias, uid:null, joined:aDate, left:null}, that.oid);
+        if (that.hasOwnProperty('service'))
+          return fNext();
+        that.service = that.service;
+        that.db.exec("UPDATE projects.project SET service = '"+that.service+"' WHERE oid = '"+that.oid+"'", noOpCallback, fNext);
+        function fNext() {
+          sServices.post(that.service, iReq.alias, aInvite, null, function() {
+            that.stmt.addMember.bind(1, iReq.alias);
+            that.stmt.addMember.bind(2, aInvite.date);
+            that.stmt.addMember.stepOnce(function(stepErr, row) {
+              if (stepErr) throw stepErr;
+              sClients.notify(iReq, {type:'memberalias', alias:iReq.alias, uid:null, joined:aInvite.date, left:null}, that.oid);
+            });
           });
-        });
+        }
       });
     });
   };
@@ -3286,18 +3305,20 @@ console.log(partlist);
       _done.pg[aPg] = true;
       _done.pt = {};
     }
-    if (iRev)
-      that.hasMembers(function(any) {
-        var aTo = {};
-        if (any)
-          aTo[that.oid] = 2;
-        sServices.post(that.service || 'localhost', aTo, iRev, iRevData, function() { //. use default service name
-          fs.unlink(sSendDir+iRev.oid, noOpCallback);
-          fUpdate();
-        });
-      });
-    else
+    if (!iRev)
+      return fUpdate();
+    if (!that.service)
+      return fUnlink();
+    that.hasMembers(function(any) {
+      var aTo = {};
+      if (any)
+        aTo[that.oid] = 2;
+      sServices.post(that.service, aTo, iRev, iRevData, fUnlink);
+    });
+    function fUnlink() {
+      fs.unlink(sSendDir+iRev.oid, noOpCallback);
       fUpdate();
+    }
     function fUpdate() {
       if (iMap.page.sideline) {
         delete iMap.page.sideline;
