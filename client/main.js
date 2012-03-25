@@ -825,9 +825,9 @@ suae.pMgr = {
           var aUseralias = aUseralias || aList[a] === this.pjCurr.useralias;
         }
       }
-      suae.menus.circ.setValue('svcalias', aUseralias ? this.pjCurr.useralias : null);
       suae.menus.circ.enable('svcalias', aList && aList.length);
     }
+    suae.menus.circ.setValue('svcalias', iMemOnly || aUseralias ? this.pjCurr.useralias : null);
     suae.menus.circ.setValue('newmember', iMemOnly || aUseralias ? 'Add Member' : '');
     suae.menus.circ.enable('newmember', iMemOnly || aUseralias);
   } ,
