@@ -2054,8 +2054,6 @@ function Project(iRecord, iCallback) {
         function fCircInvite(notify) {
           if (iReq.jso.invite && iReq.jso.invite !== 'invalid')
             sServices.listPost(that.service, that.oid, { type:'memberAlias', project:that.oid, alias:iReq.jso.alias }, null, fRespond);
-          else if (iReq.from === sUUId && iReq.jso.uid && iReq.jso.uid !== sUUId)
-            that.sendProject(iReq.jso.uid, fRespond);
           else
             fRespond();
           function fRespond() {
@@ -2076,11 +2074,15 @@ function Project(iRecord, iCallback) {
           console.log('got acceptInvite for invalid member: '+sys.inspect(row))
           sClients.respond(iReq, {});
           return; //. log error
-        }console.log('got acceptInvite');
+        }
         var aMsgToAll = { type:'memberAlias', project:that.oid, uid:iReq.from, alias:iReq.jso.alias, joined:iReq.jso.date };
-        sServices.listEdit(that.service, that.oid, 'add', iReq.from, aMsgToAll, null, function() {
-          sClients.respond(iReq, {});
-        });
+        sServices.listEditOnline(that.service, that.oid, 'add', iReq.from, aMsgToAll, null, fDone);
+        that.sendProject(iReq.from, fDone);
+        var aCb = 2;
+        function fDone() {
+          if (--aCb === 0)
+            sClients.respond(iReq, {});
+        }
       });
       return;
 
@@ -2268,7 +2270,7 @@ console.log(partlist);
       aMsgHead.type = 'project';
       var aTo = {};
       aTo[iTo] = 1;
-      sServices.postNoNodes(that.service, aTo, aMsgHead, aAllBuf, iCallback);
+      sServices.postOnlineNoNodes(that.service, aTo, aMsgHead, aAllBuf, iCallback);
     }
   };
 
