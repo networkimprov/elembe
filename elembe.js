@@ -836,6 +836,7 @@ var sServices = {
       if (iRow.timer)
         clearTimeout(iRow.timer);
       iRow.status = 'quit: '+msg;
+      sServices._clearOnlineQueue(iRow.host);
       sClients.notify(null, {type:'services', list:sServices.list(iRow.host)}, '#services');
       console.log('service quit: '+iRow.host+' '+msg);
     });
@@ -845,7 +846,7 @@ var sServices = {
       Queue.post(aReq);
     });
     iRow.conn.on('ack', function(id, type, error) {
-      if (!iRow.queue.length || id !== iRow.queue[0])
+      if (!iRow.queue.length || id !== (iRow.queue[0].id || iRow.queue[0]))
         return;
       if (iRow.timer)
         clearTimeout(iRow.timer);
@@ -866,9 +867,12 @@ var sServices = {
         if (--fOk.count > 0)
           return;
         iRow.msgHead = null;
-        iRow.queue.shift();
+        var aItem = iRow.queue.shift();
+        if (aItem.id)
+          aItem.callback('ok');
+        else
+          fs.unlink(sSendDir+iRow.host+'/'+aItem, noOpCallback);
         sServices._sendNext(iRow.host);
-        fs.unlink(sSendDir+iRow.host+'/'+id, noOpCallback);
       }
     });
     iRow.conn.on('close', function() {
@@ -877,6 +881,7 @@ var sServices = {
         clearTimeout(iRow.timer);
         iRow.timer = null;
       }
+      sServices._clearOnlineQueue(iRow.host);
       sClients.notify(null, {type:'services', list:sServices.list(iRow.host)}, '#services');
     });
     iRow.conn.on('error', function(err) {
@@ -910,18 +915,24 @@ var sServices = {
     if (!this.s[iHost].queue.length)
       return;
     var aId = this.s[iHost].queue[0];
-    fs.readFile(sSendDir+iHost+'/'+aId, function(err, data) {
+    if (aId.id)
+      fSend(null, aId.msg);
+    else
+      fs.readFile(sSendDir+iHost+'/'+aId, fSend);
+    function fSend(err, data) {
       if (err) throw err;
       if (sPlayback) {
         sServices.s[iHost].msgHead = {};
-        setTimeout(sServices.s[iHost].conn.event_ack, 20, aId, 'ok');
+        setTimeout(sServices.s[iHost].conn.event_ack, 20, (aId.id || aId), 'ok');
         return;
       }
+      if (sServices.s[iHost].status !== 'online')
+        return;
       sServices.s[iHost].msgHead = MqClient.unpackMsg(data);
       delete sServices.s[iHost].msgHead._buf;
       sServices.s[iHost].conn.send(data);
       sServices.s[iHost].timer = setTimeout(sServices._timeout, 20*1000, iHost);
-    });
+    }
   };
 
   sServices._timeout = function(iHost) {
@@ -1015,6 +1026,11 @@ var sServices = {
     this._queue(iHost, aHead, iMsg, iCallback);
   };
 
+  sServices.listEditOnline = function(iHost, iList, iOp, iMember, iEtc, iMsg, iCallback) {
+    var aHead = { op:'listEdit', to:iList, type:iOp, member:iMember, etc:iEtc };
+    this._queueOnline(iHost, aHead, iMsg, iCallback);
+  };
+
   sServices.listPost = function(iHost, iList, iEtc, iMsg, iCallback, _all) {
     var aHead = { op:'post', to:{}, etc:iEtc };
     aHead.to[iList] = _all || 2;
@@ -1028,6 +1044,32 @@ var sServices = {
   sServices.post = function(iHost, iTo, iEtc, iMsg, iCallback) {
     var aHead = typeof iTo === 'string' ? {op:'ping', alias:iTo, etc:iEtc} : {op:'post', to:iTo, etc:iEtc};
     this._queue(iHost, aHead, iMsg, iCallback);
+  };
+
+  sServices.postNoNodes = function(iHost, iTo, iEtc, iMsg, iCallback) {
+    var aHead = {op:'post', to:iTo, etc:iEtc, noNodes:1};
+    this._queue(iHost, aHead, iMsg, iCallback);
+  };
+
+  sServices.postOnlineNoNodes = function(iHost, iTo, iEtc, iMsg, iCallback) {
+    var aHead = {op:'post', to:iTo, etc:iEtc, noNodes:1};
+    this._queueOnline(iHost, aHead, iMsg, iCallback);
+  };
+
+  sServices._queueOnline = function(iHost, iHead, iMsg, iCallback) {
+    iHead.id = Date.now().toString();
+    sServices.s[iHost].queue.push({id:iHead.id, msg:MqClient.packMsg(iHead, iMsg), callback:iCallback});
+    if (sServices.s[iHost].queue.length === 1)
+      sServices._sendNext(iHost);
+  };
+
+  sServices._clearOnlineQueue = function(iHost) {
+    for (var a=0; a < sServices.s[iHost].queue.length; ++a) {
+      if (sServices.s[iHost].queue[a].id) {
+        var aDel = sServices.s[iHost].queue.splice(a--, 1);
+        aDel[0].callback();
+      }
+    }
   };
 
   sServices._queue = function(iHost, iHead, iMsg, iCallback) {
@@ -2226,7 +2268,7 @@ console.log(partlist);
       aMsgHead.type = 'project';
       var aTo = {};
       aTo[iTo] = 1;
-      sServices.post(that.service, aTo, aMsgHead, aAllBuf, iCallback);
+      sServices.postNoNodes(that.service, aTo, aMsgHead, aAllBuf, iCallback);
     }
   };
 
