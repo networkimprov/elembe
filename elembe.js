@@ -773,7 +773,6 @@ var sServices = {
       Project.setDefaultService(iRow.host);
     this.s[iRow.host] = iRow;
     iRow.timer = null;
-    iRow.msgHead = null;
     iRow.status = 'offline';
     iRow.conn = new MqClient();
     iRow.conn.on('registered', function(aliases, id, err) {
@@ -845,6 +844,11 @@ var sServices = {
       var aReq = {type:'deliver', client:null, project:etc.project, from:from, jso:etc, data:aData, callback:function() { iRow.conn.ack(id, 'ok') } };
       Queue.post(aReq);
     });
+    iRow.conn.on('listEdited', function(id, from, etc) {
+      etc.type = 'member';
+      var aReq = {type:'deliver', client:null, project:etc.list, from:from, jso:etc, data:null, callback:function() { iRow.conn.ack(id, 'ok') } };
+      Queue.post(aReq);
+    });
     iRow.conn.on('ack', function(id, type, error) {
       if (!iRow.queue.length || id !== (iRow.queue[0].id || iRow.queue[0]))
         return;
@@ -852,21 +856,19 @@ var sServices = {
         clearTimeout(iRow.timer);
       if (type === 'error')
         console.log('ack failure: '+error);
-      fOk.count = 1;
-      if (iRow.msgHead.etc && iRow.msgHead.etc.type === 'invite') {
-        if (type !== 'ok') {
-          ++fOk.count;
-          Queue.post({type:'postMsg', client:null, project:iRow.msgHead.etc.oid, msg:'Invited user '+iRow.msgHead.alias+' is unknown', callback:fOk});
-        }
-        Queue.post({type:'projectImport', client:null, project:iRow.msgHead.etc.oid, from:sUUId, data:null, callback:fOk,
-          jso:{type:'memberAlias', alias:iRow.msgHead.alias, invite:type === 'ok' ? 'accept' : 'invalid'}});
+      var aErrParam;
+      if (type !== 'ok' && (aErrParam = /^listInvite list (.+) member (.+) not found$/.exec(error))) {
+        fOk.count = 2;
+        Queue.post({type:'postMsg', client:null, project:aErrParam[1], msg:'Invited user '+aErrParam[2]+' is unknown', callback:fOk});
+        Queue.post({type:'deliver', client:null, project:aErrParam[1], from:sUUId, data:null, callback:fOk,
+          jso:{type:'member', alias:aErrParam[2], op:'invalid'}});
       } else {
+        fOk.count = 1;
         fOk();
       }
       function fOk() {
         if (--fOk.count > 0)
           return;
-        iRow.msgHead = null;
         var aItem = iRow.queue.shift();
         if (aItem.id)
           aItem.callback('ok');
@@ -922,14 +924,11 @@ var sServices = {
     function fSend(err, data) {
       if (err) throw err;
       if (sPlayback) {
-        sServices.s[iHost].msgHead = {};
         setTimeout(sServices.s[iHost].conn.event_ack, 20, (aId.id || aId), 'ok');
         return;
       }
       if (sServices.s[iHost].status !== 'online')
         return;
-      sServices.s[iHost].msgHead = MqClient.unpackMsg(data);
-      delete sServices.s[iHost].msgHead._buf;
       sServices.s[iHost].conn.send(data);
       sServices.s[iHost].timer = setTimeout(sServices._timeout, 20*1000, iHost);
     }
@@ -1021,14 +1020,14 @@ var sServices = {
     return true;
   };
 
-  sServices.listEdit = function(iHost, iList, iOp, iMember, iEtc, iMsg, iCallback) {
+  sServices.listEdit = function(iHost, iList, iOp, iMember, iEtc, iCallback) {
     var aHead = { op:'listEdit', to:iList, type:iOp, member:iMember, etc:iEtc };
-    this._queue(iHost, aHead, iMsg, iCallback);
+    this._queue(iHost, aHead, null, iCallback);
   };
 
-  sServices.listEditOnline = function(iHost, iList, iOp, iMember, iEtc, iMsg, iCallback) {
+  sServices.listEditOnline = function(iHost, iList, iOp, iMember, iEtc, iCallback) {
     var aHead = { op:'listEdit', to:iList, type:iOp, member:iMember, etc:iEtc };
-    this._queueOnline(iHost, aHead, iMsg, iCallback);
+    this._queueOnline(iHost, aHead, null, iCallback);
   };
 
   sServices.listPost = function(iHost, iList, iEtc, iMsg, iCallback, _all) {
@@ -2003,6 +2002,7 @@ function Project(iRecord, iCallback) {
     if (!that.stmt.svcMsg) {
       that.stmt.svcMsg = {
         member_find: "SELECT uid FROM member WHERE uid = ? OR alias = ?",
+        member_delete: "DELETE FROM member WHERE alias = ?",
         member_insert: "INSERT OR REPLACE INTO member VALUES (?, ?, ?, ?)",
         member_setAlias: "UPDATE member SET alias = ?2 WHERE uid = ?1",
         member_setLeft: "UPDATE member SET left = ?2 WHERE uid = ?1",
@@ -2024,44 +2024,33 @@ function Project(iRecord, iCallback) {
     }
     switch(iReq.jso.type) {
 
-    case 'memberAlias':
+    case 'member':
       that.stmt.svcMsg.member_find.bindN(iReq.jso.uid || null, iReq.jso.alias);
       that.stmt.svcMsg.member_find.stepOnce(function(err, row) {
         if (err) throw err;
-        if (iReq.jso.invite === 'invalid') {
-          that.stmt.svcMsg.member_insert.bindN(null, iReq.jso.alias, 'invalid', 'invalid');
-          that.stmt.svcMsg.member_insert.stepOnce(fStep);
+        if (iReq.jso.op === 'invalid') {
+          that.stmt.svcMsg.member_delete.bindN(iReq.jso.alias);
+          that.stmt.svcMsg.member_delete.stepOnce(fStep);
         } else if (!row || (!row.uid && iReq.jso.uid)) {
-          that.stmt.svcMsg.member_insert.bindN(iReq.jso.uid || null, iReq.jso.alias, iReq.jso.joined || null, null);
+          that.stmt.svcMsg.member_insert.bindN(iReq.jso.uid || null, iReq.jso.alias, iReq.jso.date || null, null);
           that.stmt.svcMsg.member_insert.stepOnce(fStep);
         } else if (row.uid && iReq.jso.alias) {
           that.stmt.svcMsg.member_setAlias.bindN(iReq.jso.uid, iReq.jso.alias);
           that.stmt.svcMsg.member_setAlias.stepOnce(fStep);
-        } else if (row.uid && iReq.jso.resign) {
-          that.stmt.svcMsg.member_setLeft.bindN(iReq.jso.uid, (new Date).toISOString());
+        } else if (row.uid && iReq.jso.op === 'remove') {
+          that.stmt.svcMsg.member_setLeft.bindN(iReq.jso.uid, iReq.jso.date);
           that.stmt.svcMsg.member_setLeft.stepOnce(fStep);
         } else
-          fCircInvite();
+          sClients.respond(iReq, {});
         function fStep(err) {
           if (err) throw err;
           that.stmt.svcMsg.member_select.bind(1, iReq.jso.alias);
           that.stmt.svcMsg.member_select.stepOnce(function(err, row) {
             if (err) throw err;
+            if (!row) row = {alias:iReq.jso.alias, uid:null, joined:'invalid', left:null};
             row.type = iReq.jso.uid === sUUId ? 'setuseralias' : 'memberalias';
-            fCircInvite(row);
+            sClients.notify(iReq, row, that.oid);
           });
-        }
-        function fCircInvite(notify) {
-          if (iReq.jso.invite && iReq.jso.invite !== 'invalid')
-            sServices.listPost(that.service, that.oid, { type:'memberAlias', project:that.oid, alias:iReq.jso.alias }, null, fRespond);
-          else
-            fRespond();
-          function fRespond() {
-            if (notify)
-              sClients.notify(iReq, notify, that.oid);
-            else
-              sClients.respond(iReq, {});
-          }
         }
       });
       return;
@@ -2075,8 +2064,7 @@ function Project(iRecord, iCallback) {
           sClients.respond(iReq, {});
           return; //. log error
         }
-        var aMsgToAll = { type:'memberAlias', project:that.oid, uid:iReq.from, alias:iReq.jso.alias, joined:iReq.jso.date };
-        sServices.listEditOnline(that.service, that.oid, 'add', iReq.from, aMsgToAll, null, fDone);
+        sServices.listEditOnline(that.service, that.oid, 'add', iReq.from, null, fDone);
         that.sendProject(iReq.from, fDone);
         var aCb = 2;
         function fDone() {
@@ -2628,10 +2616,10 @@ console.log(partlist);
       fNext();
     function fNext(err, row) {
       if (err) throw err;
-      var aUpdt = { type:'memberAlias', project:that.oid, alias:iReq.alias, uid:sUUId, joined:row && JSON.parse(row.data).created };
+      var aUpdt = { type:'member', project:that.oid, alias:iReq.alias, uid:sUUId, date:row && JSON.parse(row.data).created };
       sServices.listPostAll(that.service, that.oid, aUpdt, null, function() {
         var aSql = "BEGIN TRANSACTION;\
-                    INSERT OR IGNORE INTO member VALUES ( '"+sUUId+"', '"+iReq.alias+"', '"+aUpdt.joined+"', NULL );\
+                    INSERT OR IGNORE INTO member VALUES ( '"+sUUId+"', '"+iReq.alias+"', '"+aUpdt.date+"', NULL );\
                     UPDATE member SET alias = '"+iReq.alias+"' WHERE uid = '"+sUUId+"';\
                     COMMIT TRANSACTION;";
         that.db.exec(aSql, noOpCallback, function() {
@@ -2673,7 +2661,7 @@ console.log(partlist);
         that.service = that.service;
         that.db.exec("UPDATE projects.project SET service = '"+that.service+"' WHERE oid = '"+that.oid+"'", noOpCallback, fNext);
         function fNext() {
-          sServices.post(that.service, iReq.alias, aInvite, null, function() {
+          sServices.listEdit(that.service, that.oid, 'invite', iReq.alias, aInvite, function() {
             that.stmt.addMember.bind(1, iReq.alias);
             that.stmt.addMember.bind(2, aInvite.date);
             that.stmt.addMember.stepOnce(function(stepErr, row) {
@@ -2689,8 +2677,7 @@ console.log(partlist);
   Project.prototype.resign = { autogen:true };
   Project.prototype.handle_resign = function(iReq) {
     var that = this;
-    var aDel = { type:'memberAlias', project:that.oid, uid:sUUId, resign:true };
-    sServices.listEdit(that.service, that.oid, 'remove', sUUId, aDel, null, function() {
+    sServices.listEdit(that.service, that.oid, 'remove', sUUId, null, function() {
       var aRow;
       that.db.exec("UPDATE member SET left = 'pending' WHERE uid = '"+sUUId+"';\
                     SELECT alias, joined, left, uid FROM member WHERE uid = '"+sUUId+"';", function(err, row) {

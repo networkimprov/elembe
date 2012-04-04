@@ -571,12 +571,14 @@ suae.pMgr = {
       case 'memberalias':
         var aAlias = this.pj[iJso.project].userindex.find('uid', iJso.list[a].alias) && iJso.list[a].alias;
         this.pj[iJso.project].userindex.remove(aAlias || iJso.list[a].uid);
-        this.pj[iJso.project].confirmedMembers += iJso.list[a].left ? -1 : +('uid' in iJso.list[a] && aAlias !== null);
-        this.pj[iJso.project].userindex.add(iJso.list[a].uid || iJso.list[a].alias, iJso.list[a]);
+        this.pj[iJso.project].confirmedMembers += iJso.list[a].left ? -1 : +(iJso.list[a].uid && aAlias !== null);
+        if (iJso.list[a].joined !== 'invalid')
+          this.pj[iJso.project].userindex.add(iJso.list[a].uid || iJso.list[a].alias, iJso.list[a]);
         if (this.pjCurr === this.pj[iJso.project]) {
           if (aAlias || iJso.list[a].uid)
             suae.menus.circ.listDelete('members', aAlias || iJso.list[a].uid);
-          this.listMember(iJso.list[a].uid || iJso.list[a].alias);
+          if (iJso.list[a].joined !== 'invalid')
+            this.listMember(iJso.list[a].uid || iJso.list[a].alias);
           suae.menus.circ.setValue('send', this.pjCurr.confirmedMembers > 1 ? 'send revision' : 'file revision');
           suae.menus.circ.enable('svc', this.pjCurr.userindex.getList('alias').length === 0);
         }
