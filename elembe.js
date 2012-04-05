@@ -1760,7 +1760,7 @@ var sProjects = {
   };
 
   sProjects.syncTo = function(iReq, iCallback) {
-    if (sWelcome || (!iReq.session ? sProjects.syncToSession : iReq.session !== sProjects.syncToSession)) {
+    if (sWelcome || !Project.prototype.service || iReq.session !== sProjects.syncToSession) {
       iCallback(300);
       return;
     }
