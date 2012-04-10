@@ -251,8 +251,11 @@ function RecordPlayback(iFile) {
     for (var aGot; !(aGot = fs.readSync(that.fd, that.buf, 0, 4, null)); ) {
       fs.closeSync(that.fd);
       if (that.file.length === 0) {
-        console.log('playback complete');
-        process.exit(0);
+        console.log(sHttpPort ? 'playback result accessible on port '+sHttpPort : 'playback complete');
+        if (sHttpPort)
+          return sPlayback = null;
+        else
+          process.exit(0);
       }
       try {
         that.fd = fs.openSync(that.file.shift(), 'r', 0600);
@@ -343,8 +346,8 @@ function Queue() {
     if (!aReq) {
       if (Queue._checkPause && Queue._checkPause !== true)
         Queue._checkPause();
-      if (sPlayback)
-        Queue.post(sPlayback.next());
+      if (sPlayback && (aReq = sPlayback.next()))
+        Queue.post(aReq);
       return;
     }
     if (aReq.type === 'deliver' && aReq.jso.type === 'acceptInvite' && aReq.from === sUUId)
@@ -433,17 +436,17 @@ var sUUId;
 var sNodeOffset;
 var sRecord = null;
 var sPlayback = null;
-var sUpdate = false;
 
 function main(argv) {
+  var aUpdtArg, aPortArg;
   for (var a=2; a < argv.length; ++a) {
     var aOp = argv[a];
     switch (argv[a]) {
     case '-rec':  ++a; if (!fExcluded()) sRecord   =  argv[a];            break;
     case '-play': ++a; if (!fExcluded()) sPlayback = [argv[a]];           break;
-    case '-updt':      if (!fExcluded()) sUpdate   = true;                break;
+    case '-updt':      if (!fExcluded()) aUpdtArg  = true;                break;
     case '-data': ++a; sMainDir = sMainDir.replace('/', '-'+argv[a]+'/'); break;
-    case '-port': ++a; sHttpPort = +argv[a];                              break;
+    case '-port': ++a; sHttpPort = aPortArg = +argv[a];                   break;
     default:
       if (aLastOp === '-play') {
         sPlayback.push(argv[a]);
@@ -455,14 +458,14 @@ function main(argv) {
     }
     var aLastOp = aOp;
   }
-  function fExcluded() { return sRecord || sPlayback || sUpdate ? true : false }
+  function fExcluded() { return sRecord || sPlayback || aUpdtArg ? true : false }
 
   sRevisionCache = sMainDir+sRevisionCache;
   sEditCache     = sMainDir+sEditCache;
   sSendDir       = sMainDir+sSendDir;
   sInbound       = sMainDir+sInbound;
 
-  if (sUpdate) {
+  if (aUpdtArg) {
     updateSchema(function() {
       process.exit(0);
     });
@@ -474,14 +477,19 @@ function main(argv) {
       console.log(aRp.error);
       process.exit(1);
     }
-    if (sRecord) sRecord = aRp;
-    if (sPlayback) sPlayback = aRp;
+    if (sRecord) {
+      sRecord = aRp;
+    } else {
+      sPlayback = aRp;
+      if (!aPortArg)
+        sHttpPort = null;
+    }
   }
   startDatabase(function() {
     Queue.process();
-    if (sPlayback)
+    if (!sHttpPort)
       return;
-    aServer = http.createServer(httpRequest);
+    var aServer = http.createServer(httpRequest);
     aServer.listen(sHttpPort);
     var aSocket = io.listen(aServer);
     aSocket.on('connection', function(conn) {
