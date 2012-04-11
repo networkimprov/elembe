@@ -1909,7 +1909,7 @@ function Project(iRecord, iCallback) {
         iCallback();
         return;
       }
-      that.db.prepare("UPDATE revision SET map = ?, author = "+sNodeOffset+" WHERE oid = ' '", function(prepErr, stmt) {
+      that.db.prepare("UPDATE revision SET map = ?, author = "+sNodeOffset+" WHERE rowid = 1", function(prepErr, stmt) {
         if (prepErr) throw prepErr;
         that.stmt.setRevisionMap = stmt;
         if (aRevPending) {
@@ -1928,7 +1928,7 @@ function Project(iRecord, iCallback) {
       });
     });
     function fDone() {
-      that.db.exec("SELECT map, parents FROM revision WHERE oid = ' '", function(err, row) {
+      that.db.exec("SELECT map, parents FROM revision WHERE rowid = 1", function(err, row) {
         if (err) throw err;
         if (row) {
           that.revisionMap = row.map ? JSON.parse(row.map) : that.revisionMapInit();
@@ -2019,7 +2019,7 @@ function Project(iRecord, iCallback) {
         revision_has: "SELECT (SELECT 1 FROM member WHERE uid = ?) AS hasmem, (SELECT 1 FROM revision WHERE oid = ?) AS hasrev",
         revision_insert: "INSERT INTO revision VALUES (?, ?, ?, ?, ?, ?)",
         revision_insertDiff: "INSERT INTO diff VALUES ( ?1, ?3, ?2 )",
-        revision_updateParentMap: "UPDATE revision SET parents = ? WHERE oid = ' '",
+        revision_updateParentMap: "UPDATE revision SET parents = ? WHERE rowid = 1",
         revision_updateProject: "UPDATE projects.project SET data = ?, dataw = NULL WHERE oid = '"+that.oid+"'",
         revision_selectPage: "SELECT data, layout FROM page WHERE oid = ?",
         revision_insertPage: "INSERT OR REPLACE INTO page VALUES (?, ?, ?, ?, ?)"
@@ -2222,7 +2222,7 @@ console.log(partlist);
           if (err) throw err;
           aDb.exec("BEGIN TRANSACTION;\
                     UPDATE page SET layoutw = NULL, dataw = NULL;\
-                    UPDATE revision SET map = NULL WHERE oid = ' ';\
+                    UPDATE revision SET map = NULL WHERE rowid = 1;\
                     DELETE from message;\
                     DELETE from clientstate;\
                     COMMIT TRANSACTION;\
@@ -2706,7 +2706,7 @@ console.log(partlist);
         hasPage: "SELECT 1 AS haspage FROM page LIMIT 1",
         pageList: "SELECT oid, CASE WHEN dataw IS NULL THEN data ELSE dataw END AS data FROM page",
         memberList: "SELECT alias, joined, left, uid, uid='"+sUUId+"' AS useralias FROM member",
-        revisionList: "SELECT * FROM revision WHERE oid != ' ' ORDER BY date",
+        revisionList: "SELECT * FROM revision WHERE rowid != 1 ORDER BY date",
         getState: "SELECT state FROM clientstate WHERE client = ?",
         getProjectData: "SELECT CASE WHEN dataw IS NULL THEN data ELSE dataw END AS data FROM projects.project WHERE oid = '"+that.oid+"'"
       };
@@ -2869,7 +2869,7 @@ console.log(partlist);
     if (!that.stmt.readPageRevision) {
       that.stmt.readPageRevision = {
         getPage: "SELECT data, layout FROM page WHERE oid = ?",
-        pageRevision: "SELECT oid, map, sideline, author, parents FROM revision WHERE oid != ' ' ORDER BY ROWID DESC",
+        pageRevision: "SELECT oid, map, sideline, author, parents FROM revision WHERE rowid != 1 ORDER BY rowid DESC",
         getDiff: "SELECT data FROM diff WHERE revision = ? AND object = ?"
       };
       that.db.prepareN(that.stmt.readPageRevision, function(err) {
@@ -3246,8 +3246,8 @@ console.log(partlist);
       "+kIncrOid+";\
       INSERT INTO revision VALUES (\
         "+(iNoSendCallback ? '' : "'!'||")+"("+kNewOid+"), '"+sUUId+"', '"+(new Date).toISOString()+"',\
-        (SELECT map FROM revision WHERE oid = ' '),\
-        (SELECT parents FROM revision WHERE oid = ' '), NULL );\
+        (SELECT map FROM revision WHERE rowid = 1),\
+        (SELECT parents FROM revision WHERE rowid = 1), NULL );\
       SELECT * FROM revision WHERE rowid = last_insert_rowid();";
     var that = this;
     var aRev;
@@ -3287,7 +3287,7 @@ console.log(partlist);
       });
     });
     function fCommit(revdata) {
-      that.db.exec("UPDATE revision SET map = NULL, parents = '"+JSON.stringify(that.parentMap)+"' WHERE oid = ' ';\
+      that.db.exec("UPDATE revision SET map = NULL, parents = '"+JSON.stringify(that.parentMap)+"' WHERE rowid = 1;\
                     RELEASE commit_revision;", noOpCallback, function () {
         if (iNoSendCallback)
           return iNoSendCallback(aRev);
