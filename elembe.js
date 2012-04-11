@@ -1887,16 +1887,15 @@ function Project(iRecord, iCallback) {
   this.oid = iRecord.oid;
   if (iRecord.service)
     this.service = iRecord.service;
-  this.revisionMap = null;
-  this.parentMap = null;
+  this.pendingRev = null;
   this.stmt = {};
   this.db = new sqlite.Database();
   this.queue = new Queue;
 
   var that = this;
   var aPath = makePath(iRecord.oid);
-  that.db.open(aPath, function(openErr) {
-    if (openErr) throw openErr;
+  that.db.open(aPath, function(err) {
+    if (err) throw err;
     var aSchemaSql = createSchema(that.kSchema, aPath);
     aSchemaSql += "SELECT oid, map FROM revision WHERE oid LIKE '!%';";
     var aRevPending;
@@ -1909,34 +1908,35 @@ function Project(iRecord, iCallback) {
         iCallback();
         return;
       }
-      that.db.prepare("UPDATE revision SET map = ?, author = "+sNodeOffset+" WHERE rowid = 1", function(prepErr, stmt) {
-        if (prepErr) throw prepErr;
-        that.stmt.setRevisionMap = stmt;
-        if (aRevPending) {
-          fs.readFile(sSendDir+aRevPending.oid.slice(1), function(err, buffer) {
-            if (err && err.errno !== process.ENOENT) throw err;
-            if (buffer) {
-              var aRevMsg = MqClient.unpackMsg(buffer);
-              var aRevBuf = aRevMsg._buf;
-              delete aRevMsg._buf;
-            }
-            that._finishRevision(that.db, JSON.parse(aRevPending.map), aRevMsg, aRevBuf, fDone);
-          });
-        } else {
-          that.db.exec("INSERT OR IGNORE INTO revision (oid, map, parents) VALUES (' ', '"+that.revisionMapJson()+"', '{}')", noOpCallback, fDone);
-        }
-      });
+      if (!aRevPending) {
+        that.db.exec("INSERT OR IGNORE INTO revision (oid, map, parents) VALUES (' ', '"+that.revisionMapJson()+"', '{}')", noOpCallback, fDone);
+      } else {
+        fs.readFile(sSendDir+aRevPending.oid.slice(1), function(err, buffer) {
+          if (err && err.errno !== process.ENOENT) throw err;
+          if (buffer) {
+            var aRevMsg = MqClient.unpackMsg(buffer);
+            var aRevBuf = aRevMsg._buf;
+            delete aRevMsg._buf;
+          }
+          that._finishRevision(that.db, JSON.parse(aRevPending.map), aRevMsg, aRevBuf, fDone);
+        });
+      }
     });
     function fDone() {
-      that.db.exec("SELECT map, parents FROM revision WHERE rowid = 1", function(err, row) {
+      that.db.exec("SELECT oid, map, parents FROM revision WHERE rowid = 1", function(err, row) {
         if (err) throw err;
         if (row) {
-          that.revisionMap = row.map ? JSON.parse(row.map) : that.revisionMapInit();
-          that.parentMap = JSON.parse(row.parents);
+          row.map = row.map ? JSON.parse(row.map) : that.revisionMapInit();
+          row.parents = JSON.parse(row.parents);
+          that.pendingRev = row;
         }
       }, function() {
-        that.queue.next();
-        iCallback();
+        that.db.prepare("UPDATE revision SET map = ?, author = "+sNodeOffset+" WHERE rowid = 1", function(err, stmt) {
+          if (err) throw err;
+          that.stmt.setRevisionMap = stmt;
+          that.queue.next();
+          iCallback();
+        });
       });
     }
   });
@@ -2095,7 +2095,7 @@ console.log(row);
         }
         that.db.exec("BEGIN TRANSACTION", noOpCallback, function() {
           aNotify = [];
-          for (var a in that.parentMap)
+          for (var a in that.pendingRev.parents)
             if (!(a in iReq.jso.parents))
               iReq.jso.parents[a] = 0;
           that.checkConflict(iReq.jso, aNotify, function(sideline, partlist) {
@@ -2110,8 +2110,8 @@ console.log(partlist);
               that.stmt.svcMsg.revision_insertDiff.bind(3, iReq.jso.oid);
               if (sideline)
                 return fIter();
-              that.parentMap[iReq.jso.author] = +iReq.jso.oid.slice(iReq.jso.oid.indexOf('.')+1);
-              that.stmt.svcMsg.revision_updateParentMap.bind(1, JSON.stringify(that.parentMap));
+              that.pendingRev.parents[iReq.jso.author] = +iReq.jso.oid.slice(iReq.jso.oid.indexOf('.')+1);
+              that.stmt.svcMsg.revision_updateParentMap.bind(1, JSON.stringify(that.pendingRev.parents));
               that.stmt.svcMsg.revision_updateParentMap.stepOnce(function(err, row) {
                 if (err) throw err;
                 fIter();
@@ -2308,7 +2308,8 @@ console.log(partlist);
         _state = { conflict:[], chain:{}, parents:{}, ancestors:{}, authorJoined:_state };
         for (var a in iRevision.parents)
           _state.parents[a] = _state.ancestors[a] = iRevision.parents[a];
-        fLogConflict(iRevision, { rowid:row ? row.rowid+1 : 2, oid:' ', map:that.revisionMap, parents:that.parentMap, author:sUUId, joined:'3333' }, 'chain');
+        var aPendingRev = { rowid:row ? row.rowid+1 : 2, oid:that.pendingRev.oid, map:that.pendingRev.map, parents:that.pendingRev.parents, author:sUUId, joined:'3333' };
+        fLogConflict(iRevision, aPendingRev, 'chain');
       }
       if (row) {
         var aOidCounter = +row.oid.slice(row.oid.indexOf('.')+1);
@@ -2375,7 +2376,7 @@ console.log(partlist);
       that.stmt.checkConflict.revision.reset();
       if (_state.conflict.length === 0)
         return iCallback(null, {});
-      var aSidelinedCurr = _state.conflict[0].oid === ' ';
+      var aSidelinedCurr = _state.conflict[0].oid === that.pendingRev.oid;
       for (var a=_state.conflict.length-1; a >= +aSidelinedCurr; --a)
         if (_state.conflict[a].isParent || _state.conflict[a].joined < _state.authorJoined)
           return iCallback(_state.conflict[a].oid);
@@ -2487,14 +2488,14 @@ console.log(partlist);
           that.stmt.checkConflict.setrev.bind(2, iRevision.oid);
           that.stmt.checkConflict.setrev.stepOnce(function(err, row) {
             if (err) throw err;
-            if (that.parentMap[aConflict.author] === +aConflict.oid.slice(aConflict.oid.indexOf('.')+1)) {
+            if (that.pendingRev.parents[aConflict.author] === +aConflict.oid.slice(aConflict.oid.indexOf('.')+1)) {
               that.stmt.checkConflict.parent.bind(1, aConflict.author);
               that.stmt.checkConflict.parent.stepOnce(function(err, row) {
                 if (err) throw err;
                 if (row)
-                  that.parentMap[aConflict.author] = +row.oid.slice(row.oid.indexOf('.')+1);
+                  that.pendingRev.parents[aConflict.author] = +row.oid.slice(row.oid.indexOf('.')+1);
                 else
-                  delete that.parentMap[aConflict.author];
+                  delete that.pendingRev.parents[aConflict.author];
                 fNext();
               });
             } else {
@@ -2761,8 +2762,8 @@ console.log(partlist);
       that.stmt.updateData.bind(1, JSON.stringify(iReq.data));
       that.stmt.updateData.stepOnce(function(stepErr, row) {
         if (stepErr) throw stepErr;
-        that.revisionMap.touch = (new Date).toISOString();
-        that.stmt.setRevisionMap.bind(1, JSON.stringify(that.revisionMap));
+        that.pendingRev.map.touch = (new Date).toISOString();
+        that.stmt.setRevisionMap.bind(1, JSON.stringify(that.pendingRev.map));
         that.stmt.setRevisionMap.stepOnce(function(stepErr, row) {
           if (stepErr) throw stepErr;
           that.db.exec("COMMIT TRANSACTION", noOpCallback, function() {
@@ -2788,8 +2789,8 @@ console.log(partlist);
       if (stepErr) throw stepErr;
       if (row) aPage = row;
     }, function() {
-      that.revisionMap.page[aPage.oid] = {op:'+', touch:(new Date).toISOString(), part:{}};
-      that.stmt.setRevisionMap.bind(1, JSON.stringify(that.revisionMap));
+      that.pendingRev.map.page[aPage.oid] = {op:'+', touch:(new Date).toISOString(), part:{}};
+      that.stmt.setRevisionMap.bind(1, JSON.stringify(that.pendingRev.map));
       that.stmt.setRevisionMap.stepOnce(function(stepErr, row) {
         if (stepErr) throw stepErr;
         that.db.exec("COMMIT TRANSACTION", function(err, row) {
@@ -2845,12 +2846,12 @@ console.log(partlist);
       that.stmt.writePage.bind(3, iReq.page);
       that.stmt.writePage.stepOnce(function(stepErr, row) {
         if (stepErr) throw stepErr;
-        if (!that.revisionMap.page[iReq.page])
-          that.revisionMap.page[iReq.page] = {op:'!', touch:null, part:{}};
-        else if (that.revisionMap.page[iReq.page].op === '.')
-          that.revisionMap.page[iReq.page].op = '!';
-        that.revisionMap.page[iReq.page].touch = (new Date).toISOString();
-        that.stmt.setRevisionMap.bind(1, JSON.stringify(that.revisionMap));
+        if (!that.pendingRev.map.page[iReq.page])
+          that.pendingRev.map.page[iReq.page] = {op:'!', touch:null, part:{}};
+        else if (that.pendingRev.map.page[iReq.page].op === '.')
+          that.pendingRev.map.page[iReq.page].op = '!';
+        that.pendingRev.map.page[iReq.page].touch = (new Date).toISOString();
+        that.stmt.setRevisionMap.bind(1, JSON.stringify(that.pendingRev.map));
         that.stmt.setRevisionMap.stepOnce(function(stepErr, row) {
           if (stepErr) throw stepErr;
           that.db.exec("COMMIT TRANSACTION", noOpCallback, function() {
@@ -3093,12 +3094,12 @@ console.log(partlist);
       fMap();
     function fMap() {
       fs.stat(aPath, function(statErr, stats) {
-        if (!that.revisionMap.page[iReq.page])
-          that.revisionMap.page[iReq.page] = {op:'.', touch:null, part:{}};
-        if (!that.revisionMap.page[iReq.page].part[iReq.part])
-          that.revisionMap.page[iReq.page].part[iReq.part] = {op:statErr ? '+' : '!', touch:null};
-        that.revisionMap.page[iReq.page].part[iReq.part].touch = (new Date).toISOString();
-        that.stmt.setRevisionMap.bind(1, JSON.stringify(that.revisionMap));
+        if (!that.pendingRev.map.page[iReq.page])
+          that.pendingRev.map.page[iReq.page] = {op:'.', touch:null, part:{}};
+        if (!that.pendingRev.map.page[iReq.page].part[iReq.part])
+          that.pendingRev.map.page[iReq.page].part[iReq.part] = {op:statErr ? '+' : '!', touch:null};
+        that.pendingRev.map.page[iReq.page].part[iReq.part].touch = (new Date).toISOString();
+        that.stmt.setRevisionMap.bind(1, JSON.stringify(that.pendingRev.map));
         that.stmt.setRevisionMap.stepOnce(function(stepErr, row) {
           if (stepErr) throw stepErr;
           sClients.notify(iReq.client, {type:'part', oid:iReq.part, data:Buffer.isBuffer(iReq.data) ? null : iReq.data}, that.oid, iReq.page);
@@ -3130,13 +3131,13 @@ console.log(partlist);
       iCallback = function() { if (--iCallback.count === 0) aCb(); };
       iCallback.count = 1;
     }
-    for (var aPg in that.revisionMap.page) {
-      if (that.revisionMap.page[aPg].done)
+    for (var aPg in that.pendingRev.map.page) {
+      if (that.pendingRev.map.page[aPg].done)
         continue;
-      for (var aPt in that.revisionMap.page[aPg].part) {
-        if (that.revisionMap.page[aPg].part[aPt].done)
+      for (var aPt in that.pendingRev.map.page[aPg].part) {
+        if (that.pendingRev.map.page[aPg].part[aPt].done)
           continue;
-        that.revisionMap.page[aPg].part[aPt].done = true;
+        that.pendingRev.map.page[aPg].part[aPt].done = true;
         var aPath = getPath(aPt);
         fs.stat(aPath, function(statErr, stats) {
           if (iBufList) {
@@ -3166,8 +3167,8 @@ console.log(partlist);
         }
         return;
       }
-      that.revisionMap.page[aPg].done = true;
-      if (that.revisionMap.page[aPg].op !== '.') {
+      that.pendingRev.map.page[aPg].done = true;
+      if (that.pendingRev.map.page[aPg].op !== '.') {
         that.stmt.makeDiffs.getPageData.bind(1, aPg);
         that.stmt.makeDiffs.getPageData.stepOnce(function(err, row) {
           if (err) throw err;
@@ -3204,7 +3205,7 @@ console.log(partlist);
         return;
       }
     }
-    if (that.revisionMap.touch) {
+    if (that.pendingRev.map.touch) {
       var aDiff;
       that.db.exec("SELECT data, dataw FROM projects.project WHERE oid = '"+that.oid+"'", function(err, row) {
         if (err) throw err;
@@ -3236,8 +3237,8 @@ console.log(partlist);
 
   Project.prototype.commitRevision = { autogen:true };
   Project.prototype.handle_commitRevision = function(iReq, iNoSendCallback) {
-    if (!this.revisionMap.touch) {
-      for (var any in this.revisionMap.page) break;
+    if (!this.pendingRev.map.touch) {
+      for (var any in this.pendingRev.map.page) break;
       if (!any)
         return sClients.respond(iReq, {status:'ok'});
     }
@@ -3259,7 +3260,7 @@ console.log(partlist);
         aRev.parents = JSON.parse(aRev.parents);
         if (!iNoSendCallback) {
           aRev.oid = aRev.oid.slice(1);
-          that.parentMap[sUUId] = +aRev.oid.slice(aRev.oid.indexOf('.')+1);
+          that.pendingRev.parents[sUUId] = +aRev.oid.slice(aRev.oid.indexOf('.')+1);
         }
       }
     }, function () {
@@ -3287,12 +3288,12 @@ console.log(partlist);
       });
     });
     function fCommit(revdata) {
-      that.db.exec("UPDATE revision SET map = NULL, parents = '"+JSON.stringify(that.parentMap)+"' WHERE rowid = 1;\
+      that.db.exec("UPDATE revision SET map = NULL, parents = '"+JSON.stringify(that.pendingRev.parents)+"' WHERE rowid = 1;\
                     RELEASE commit_revision;", noOpCallback, function () {
         if (iNoSendCallback)
           return iNoSendCallback(aRev);
-        that._finishRevision(that.db, that.revisionMap, revdata && aRev, revdata, function() {
-          that.revisionMap = that.revisionMapInit();
+        that._finishRevision(that.db, that.pendingRev.map, revdata && aRev, revdata, function() {
+          that.pendingRev.map = that.revisionMapInit();
           delete aRev.list;
           sClients.notify(iReq, aRev, that.oid);
         });
