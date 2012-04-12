@@ -1437,7 +1437,7 @@ var sProjects = {
           aDb.open(aPath, function(err) {
             if (err) throw err;
             var aSchemaSql = createSchema(Project.prototype.kSchema, aPath);
-            aSchemaSql += "INSERT OR IGNORE INTO revision (oid, map, parents) VALUES (' ', '"+Project.prototype.revisionMapJson('notouch')+"', '{}');";
+            aSchemaSql += "INSERT OR IGNORE INTO revision (oid, parents) VALUES (' ', '{}');";
             aDb.exec(aSchemaSql, noOpCallback, function() {
               aDb.close();
               fFileLoop(0, 0);
@@ -1909,7 +1909,7 @@ function Project(iRecord, iCallback) {
         return;
       }
       if (!aRevPending) {
-        that.db.exec("INSERT OR IGNORE INTO revision (oid, map, parents) VALUES (' ', '"+that.revisionMapJson()+"', '{}')", noOpCallback, fDone);
+        that.db.exec("INSERT OR IGNORE INTO revision (oid, parents) VALUES (' ', '{}')", noOpCallback, fDone);
       } else {
         fs.readFile(sSendDir+aRevPending.oid.slice(1), function(err, buffer) {
           if (err && err.errno !== process.ENOENT) throw err;
@@ -2222,7 +2222,7 @@ console.log(partlist);
           if (err) throw err;
           aDb.exec("BEGIN TRANSACTION;\
                     UPDATE page SET layoutw = NULL, dataw = NULL;\
-                    UPDATE revision SET map = NULL WHERE rowid = 1;\
+                    UPDATE revision SET oid = ' ', map = NULL WHERE rowid = 1;\
                     DELETE from message;\
                     DELETE from clientstate;\
                     COMMIT TRANSACTION;\
@@ -2782,20 +2782,22 @@ console.log(partlist);
     SELECT oid, dataw AS data FROM page WHERE rowid = last_insert_rowid();";
 
   Project.prototype.newPage = { autogen:true };
-  Project.prototype.handle_newPage = function(iReq, iCallback) {
+  Project.prototype.handle_newPage = function(iReq, iFirstpageCallback) {
     var aPage;
     var that = this;
     that.db.exec(this.kNewPageSql, function(stepErr, row) {
       if (stepErr) throw stepErr;
       if (row) aPage = row;
     }, function() {
-      that.pendingRev.map.page[aPage.oid] = {op:'+', touch:(new Date).toISOString(), part:{}};
+      if (iFirstpageCallback)
+        that.pendingRev.map.touch = (new Date).toISOString();
+      that.pendingRev.map.page[aPage.oid] = {op:'+', touch:that.pendingRev.map.touch, part:{}};
       that.stmt.setRevisionMap.bind(1, JSON.stringify(that.pendingRev.map));
       that.stmt.setRevisionMap.stepOnce(function(stepErr, row) {
         if (stepErr) throw stepErr;
         that.db.exec("COMMIT TRANSACTION", function(err, row) {
           if (err) throw err;
-        }, iCallback || function() {
+        }, iFirstpageCallback || function() {
           sClients.page(iReq.client, that.oid, aPage.oid);
           aPage.data = JSON.parse(aPage.data);
           aPage.type = 'page';
@@ -3230,9 +3232,6 @@ console.log(partlist);
 
   Project.prototype.revisionMapInit = function() {
     return {touch:null, page:{}};
-  };
-  Project.prototype.revisionMapJson = function(iNoTouch) {
-    return JSON.stringify({touch:iNoTouch ? null : (new Date).toISOString(), page:{}});
   };
 
   Project.prototype.commitRevision = { autogen:true };
