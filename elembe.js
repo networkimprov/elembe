@@ -1915,7 +1915,7 @@ function Project(iRecord, iCallback) {
             var aRevBuf = aRevMsg._buf;
             delete aRevMsg._buf;
           }
-          that._finishRevision(that.db, JSON.parse(aRevPending.map), aRevMsg, aRevBuf, fPendingRev);
+          that._finishRevision(JSON.parse(aRevPending.map), aRevMsg, aRevBuf, fPendingRev);
         });
       }
     });
@@ -2183,7 +2183,7 @@ console.log(partlist);
         }
         that.db.exec("COMMIT TRANSACTION", noOpCallback, function() {
           if (!iReq.jso.sideline)
-            that._finishRevision(that.db, iReq.jso.map, null, null, fDone);
+            that._finishRevision(iReq.jso.map, null, null, fDone);
           else
             fDone();
           function fDone() {
@@ -3298,7 +3298,7 @@ console.log(partlist);
                     RELEASE commit_revision;", noOpCallback, function() {
         if (iNoSendCallback)
           return iNoSendCallback(aRev);
-        that._finishRevision(that.db, aMap, revdata && aRev, revdata, function() {
+        that._finishRevision(aMap, revdata && aRev, revdata, function() {
           delete aRev.list;
           sClients.notify(iReq, aRev, that.oid);
         });
@@ -3306,7 +3306,7 @@ console.log(partlist);
     }
   };
 
-  Project.prototype._finishRevision = function(iDb, iMap, iRev, iRevData, iCallback, _done) {
+  Project.prototype._clearTempFiles = function(iMap, iCallback, _done) {
     var that = this;
     if (!_done)
       _done = { pg:{}, pt:{} };
@@ -3320,27 +3320,27 @@ console.log(partlist);
         if (sAttachments.isOpen(aPt)) {
           if (iMap.page.sideline) {
             sAttachments.invalidate(aPt, function() {
-              that._finishRevision(iDb, iMap, iRev, iRevData, iCallback, _done);
+              that._clearTempFiles(iMap, iCallback, _done);
             });
             return;
           }
           dupFile(aPath+'.w', aPath, function(err) {
             if (err) throw err;
-            that._finishRevision(iDb, iMap, iRev, iRevData, iCallback, _done);
+            that._clearTempFiles(iMap, iCallback, _done);
           });
         } else {
-          var aCbCount = 1;
+          fCallback.count = 1;
           if (iMap.page.sideline) {
             fs.unlink(aPath+'.w', fCallback);
-            ++aCbCount;
+            ++fCallback.count;
           }
           fs.rename(aPath+(iMap.page.sideline ? '.new' : '.w'), aPath, fCallback);
           function fCallback(err) {
             if (err && err.errno !== process.ENOENT) throw err;
-            if (--aCbCount === 0)
+            if (--fCallback.count === 0)
               syncFile(getParent(aPath), function(err) {
                 if (err) throw err;
-                that._finishRevision(iDb, iMap, iRev, iRevData, iCallback, _done);
+                that._clearTempFiles(iMap, iCallback, _done);
               });
           }
         }
@@ -3350,15 +3350,22 @@ console.log(partlist);
       _done.pg[aPg] = true;
       _done.pt = {};
     }
-    if (!iRev)
-      return fUpdate();
-    if (!that.service)
-      return fUnlink();
-    that.hasMembers(function(any) {
-      var aTo = {};
-      if (any)
-        aTo[that.oid] = 2;
-      sServices.post(that.service, aTo, iRev, iRevData, fUnlink);
+    iCallback();
+  };
+
+  Project.prototype._finishRevision = function(iMap, iRev, iRevData, iCallback) {
+    var that = this;
+    that._clearTempFiles(iMap, function() {
+      if (!iRev)
+        return fUpdate();
+      if (!that.service)
+        return fUnlink();
+      that.hasMembers(function(any) {
+        var aTo = {};
+        if (any)
+          aTo[that.oid] = 2;
+        sServices.post(that.service, aTo, iRev, iRevData, fUnlink);
+      });
     });
     function fUnlink() {
       fs.unlink(sSendDir+iRev.oid, noOpCallback);
@@ -3369,7 +3376,7 @@ console.log(partlist);
         delete iMap.page.sideline;
         var aSetMap = ", map = '"+JSON.stringify(iMap)+"'";
       }
-      iDb.exec("UPDATE revision SET oid = substr(oid, 2)"+(aSetMap||'')+" WHERE oid LIKE '!%'", noOpCallback, iCallback);
+      that.db.exec("UPDATE revision SET oid = substr(oid, 2)"+(aSetMap||'')+" WHERE oid LIKE '!%'", noOpCallback, iCallback);
     }
   };
 
