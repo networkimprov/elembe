@@ -2010,7 +2010,8 @@ function Project(iRecord, iCallback) {
         member_setLeft: "UPDATE member SET left = ?2 WHERE uid = ?1",
         member_select: "SELECT uid, alias, joined, left FROM member WHERE alias = ?",
         accept_select: "SELECT uid, left FROM member WHERE alias = ?",
-        revision_has: "SELECT (SELECT 1 FROM member WHERE uid = ?) AS hasmem, (SELECT 1 FROM revision WHERE oid = ?) AS hasrev",
+        revision_hasMem: "SELECT 1 FROM member WHERE uid = ?",
+        revision_hasRev: "SELECT rowid FROM revision WHERE oid = ?",
         revision_insert: "INSERT INTO revision VALUES (?, ?, ?, ?, ?, ?)",
         revision_insertDiff: "INSERT INTO diff VALUES ( ?1, ?3, ?2 )",
         revision_updateParentMap: "UPDATE revision SET parents = ? WHERE rowid = 1",
@@ -2078,42 +2079,48 @@ function Project(iRecord, iCallback) {
 
     case 'revision':
       var aNotify;
-      that.stmt.svcMsg.revision_has.bindN(iReq.from, iReq.jso.oid);
-      that.stmt.svcMsg.revision_has.stepOnce(function(err, row) {
+      that.stmt.svcMsg.revision_hasMem.bind(1, iReq.from);
+      that.stmt.svcMsg.revision_hasMem.stepOnce(function(err, row) {
         if (err) throw err;
-console.log(row);
-        if (iReq.from !== sUUId && !row.hasmem || row.hasrev) {
-          sClients.respond(iReq, {});
-          console.log('skip rev '+iReq.jso.oid+' from '+iReq.from);
-          return;
-        }
-        that.db.exec("BEGIN TRANSACTION", noOpCallback, function() {
-          aNotify = [];
-          for (var a in that.pendingRev.parents)
-            if (!(a in iReq.jso.parents))
-              iReq.jso.parents[a] = 0;
-          that.checkConflict(iReq.jso, aNotify, function(sideline, partlist) {
-console.log(partlist);
-            iReq.jso.sideline = sideline;
-            if (partlist)
-              iReq.jso.map.page.sideline = {part:partlist};
-            that.stmt.svcMsg.revision_insert.bindN((sideline ? '' : '!')+iReq.jso.oid, iReq.jso.author, iReq.jso.date,
-                                                   JSON.stringify(iReq.jso.map), JSON.stringify(iReq.jso.parents), sideline || null);
-            that.stmt.svcMsg.revision_insert.stepOnce(function(err, row) {
-              if (err) throw err;
-              that.stmt.svcMsg.revision_insertDiff.bind(3, iReq.jso.oid);
-              if (sideline)
-                return fIter();
-              that.pendingRev.parents[iReq.jso.author] = +iReq.jso.oid.slice(iReq.jso.oid.indexOf('.')+1);
-              that.stmt.svcMsg.revision_updateParentMap.bind(1, JSON.stringify(that.pendingRev.parents));
-              that.stmt.svcMsg.revision_updateParentMap.stepOnce(function(err, row) {
+        if (iReq.from !== sUUId && !row)
+          return fSkip();
+        that.stmt.svcMsg.revision_hasRev.bind(1, iReq.jso.oid);
+        that.stmt.svcMsg.revision_hasRev.stepOnce(function(err, foundRev) {
+          if (err) throw err;
+          if (foundRev && foundRev.rowid !== 1)
+            return fSkip();
+          that.db.exec("BEGIN TRANSACTION", noOpCallback, function() {
+            aNotify = [];
+            for (var a in that.pendingRev.parents)
+              if (!(a in iReq.jso.parents))
+                iReq.jso.parents[a] = 0;
+            that.checkConflict(iReq.jso, aNotify, function(sideline, partlist) {
+  console.log(partlist);
+              iReq.jso.sideline = sideline;
+              if (partlist)
+                iReq.jso.map.page.sideline = {part:partlist};
+              that.stmt.svcMsg.revision_insert.bindN((sideline ? '' : '!')+iReq.jso.oid, iReq.jso.author, iReq.jso.date,
+                                                     JSON.stringify(iReq.jso.map), JSON.stringify(iReq.jso.parents), sideline || null);
+              that.stmt.svcMsg.revision_insert.stepOnce(function(err, row) {
                 if (err) throw err;
-                fIter();
+                that.stmt.svcMsg.revision_insertDiff.bind(3, iReq.jso.oid);
+                if (sideline)
+                  return fIter();
+                that.pendingRev.parents[iReq.jso.author] = +iReq.jso.oid.slice(iReq.jso.oid.indexOf('.')+1);
+                that.stmt.svcMsg.revision_updateParentMap.bind(1, JSON.stringify(that.pendingRev.parents));
+                that.stmt.svcMsg.revision_updateParentMap.stepOnce(function(err, row) {
+                  if (err) throw err;
+                  fIter();
+                });
               });
             });
           });
         });
       });
+      function fSkip() {
+        sClients.respond(iReq, {});
+        console.log('skip rev '+iReq.jso.oid+' from '+iReq.from);
+      }
       function fIter(iterN, iterO) {
         if (!iterN) iterN = iterO = 0;
         if (iterN < iReq.jso.list.length) {
@@ -2334,7 +2341,7 @@ console.log(partlist);
           }
         }
         if (!alt.sideline && !alt.isParent || alt.sideline && alt.isParent || !chain && main.joined > alt.joined) {
-          if (alt.map.touch && main.map.touch)
+          if (alt.map.touch && main.map.touch || alt.oid === main.oid)
             return fRecur(true);
           for (var aPg in main.map.page) {
             if (aPg in alt.map.page) {
@@ -2494,11 +2501,21 @@ console.log(partlist);
               fNext();
             }
             function fNext() {
-              oNotify.push({type:'revisionsideline', oid:aConflict.oid});
-              if (++aRevN < _state.conflict.length)
-                fSideline();
-              else
-                fSaveState();
+              var fContinue = ++aRevN < _state.conflict.length ? fSideline : fSaveState;
+              if (aConflict.oid === iRevision.oid) {
+                if (aConflict.oid === that.pendingRev.oid) {
+                  //. handle_commitRevision should set diff.data=null for pendingRev.map parts
+                  that.pendingRev.oid = ' ';
+                  that.pendingRev.map = that.revisionMapInit();
+                  var aUpdate = "UPDATE revision SET oid = ' ', map = NULL WHERE rowid = 1;";
+                }
+                that.db.exec((aUpdate||"")+" \
+                              DELETE FROM revision WHERE oid = '"+aConflict.oid+"'; \
+                              DELETE FROM diff WHERE revision = '"+aConflict.oid+"';", noOpCallback, fContinue);
+              } else {
+                oNotify.push({type:'revisionsideline', oid:aConflict.oid});
+                fContinue();
+              }
               function fSaveState() {
                 for (var a=0; a < states.length; ++a) {
                   if (!states[a]._update)
