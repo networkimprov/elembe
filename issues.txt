@@ -1,37 +1,97 @@
 Elembe Issues
 
+features
+  notice to user and set read-only when loaded pages revised/sidelined
+    push loaded page to rev cache on user ack
+    not for revision author
+  enable defer of pendingRev elements
+    select all, page, part
+    request confirmation on commit
+  revert page/object in pendingRev
+  Sidelining
+    don't sideline pendingRev?
+    or flag when pendingRev sidelined
+      force save of client data before applying incoming rev?
+    parts of sidelined rev can be pushed into pendingrev
+  desktop app support
+    share/drop directory
+      new files land in user scratch project
+      directories for active projects?
+    in share directories:
+      file: "--- DON'T MAKE NEW FILES HERE ---" 
+      file to remind user to get pathname via attachment ui
+  user profiles
+    table with uuid, data (json), aes key
+    my-profiles project
+      editor app
+  client
+    on revision, update page in titles palette
+    prevent add member when no revision filed
+    alternate page editors; pgedit code to module
+    pgedit undo/redo
+    linked text fields call paletteEvent with value { name:value, ... }
+    flag if node busy with syncTo, option to interrupt //
+      if interrupted, syncFrom side restart
+    add-members
+      select service if not set
+      take multiple aliases; check all before adding
+    service editor
+      if not on main service, option to join it
+    layout editor
+      for search result, highlight part
+    attachment editor
+      add image-viewer features
+      present text formats in iframe
+      display extracted metadata, most common keywords
+      allow user to open files with File->Open dialog
+        on Attachment>GetPathname, provide copy/cut-able pathname
+        on cut, show path in gray; on click, highlight path
+    note/discussion editor
+  authorize new client for session or permanent access
+    authenticate sync node
+  xapian module and search features
+
 code cleanup
   Use prepared stmts when including parameters from relay messages
-  rename 'import' functions
+  rename 'import' functions; move body of each case to separate function
   replace literals with constants
   apply all codestyle name conventions
-  turn into classes with methods: revisionMap, parentMap
+  turn into classes with methods: pendingRev
 
-storeFile use temporary directory (?) to avoid partial files on crash
+fix: fs.writeFile can leave partial files on crash
+fix: prevent concurrent access to projects db from Project methods
+fix: on sideline of rev with new page, prevent page data deletion
+
+createSchema include \n\n; to enable sql.replace() to include code in tx
+  remove workarounds in subsequent txs (INSERT OR IGNORE, etc)
+
 sync all written files prior to commit
+fs transaction class
+  create, open, mkdir, rename
+  record/open fds for each method
+  fsync fds on commit (syscall to sync multiple fds?)
+
+dupDb function - use sqlite online backup api
 
 verify request parameter types
 verify client message parameters
 
-notice to user and set read-only when loaded pages revised/sidelined
-  push loaded page to rev cache on user ack
-  not for revision author
-
-Sidelining
-  flag when uncommitted revision sidelined
-  force save of client data before applying incoming rev?
-  parts of sidelined rev can be pushed into current revision
-
-desktop app support
-  on foreign rev and file open, set .w file read-only and mv to revcache
+factory-reset op
 
 purge algorithms for RevisionCache & EditCache
+  on foreign rev and file open, set .w file read-only and mv to revcache
 
 comments
   protection against inconsistency when saving data and submitting relay msg
   checkconflict logic; appending local uuid to incoming revs
 
-create thorough test sequence
+testing
+  verify each via result_query, expected_result
+  playback push variable # of requests in recording to queue? to test concurrency issues
+    prevent connection to relay? (register wipes out alias)
+  sequence branch
+    run node aa aaef
+    on run, if current test (aa) matches target (aaef), find tests with aae in target
 
 event & error logging; log rotation
 
@@ -40,34 +100,79 @@ encryption
   user public key, hosted CA, relay request & store certs, store certs in user profiles
   en/decrypt messages on queue/deliver
 
+fix: wsstream << bug: b[0] + (b[1] << 1*8) + (b[2] << 2*8) + (b[3] << 3*8 >>> 0) 
 wsstream read from filestream; sServices._sendNext send file
 wsstream write incrementally; sServices.on('deliver') stream data after header
 stream data to http connections
 
-profiles
-  table with uuid, data (json), aes key
-  my-profiles project
-    editor app
+port to node 0.8
+  create new sqlite module
+  fs.utimes in dupFile
+  native inotify api
 
-client
-  on revision, update page in titles palette
-  prevent add member when no revision filed
-  alternate page editors; pgedit code to module
-  pgedit undo/redo
+service db store IP addr & alternates
+  use DNS if no IP addr stored
+  service may update IP list
 
-port to node 0.5
-switch to sqlite3 module
-fs.utimes in dupFile
+bug: db writes for async messages (registered) can be out of order
 
-activate new node for user
-  primary contact secondary, provide uid, nodeid, service list
-  secondary register with services, hold any new msgs til project arrives
-  primary send projects
-  primary display progress bar
+sServices: 'deliver' message callback take success argument
+  login/info msgs rename to authenticate/authenticated
 
-xapian module and search features
+relay multi-node support
+  newService message
+  at 2ndary service, on first register, create spare node (?)
+    other nodes copy spare node queue (in response to newService msg)
+    remove spare node after n days
+  register set joined-date in user db, return in any response (?)
+  register on alias update post registered msg to nodes //
+
+node-to-node sync
+  allow user to name nodes from lists of colors, animals, flowers, etc
+    randomly sort list when user selects
+  syncTo reject if not joined public service//
+  handle (clear?) pending service changes post-sync
+  on registered queue newService msg to public svc, skip sender
+    on newService (only allowed from public svc)
+      insert db, create svc
+  conflict mgmt
+    find in-progress rev by WHERE rowid = 1//
+    generate pendingrev oid & date on edit//
+    on arrival of rev, if oid found
+      if found rowid==1
+        checkconflict: if oid = inprogrev.oid, flagconflict and clear .pendingRev & rowid=1//
+      ?else if incoming date > found date replace it with this rev (if found row not sidelined, throw err)
+    ?on sideline of in-progress rev, distribute to nodes (unless already backed up)
+    on in-progress rev update, store date & local offset
+      on project open, if local offset != in-progress rev, inform user
+    revs include committing node offset
+      conflicting revs from different nodes resolved by later date, then higher-numbered node (log same-date coincidence)
+      don't sideline in-progress rev by same user with later date, unless due to sidelined ancestor
+        offer to modify in-progress rev by reverting objects from incoming rev missing from in-progress rev?
+  backup in-progress revision data to user nodes
+    do backup pass prior to sync?
+    store last-backup revisionmap
+    on revisionMap save, flag project for backup in projects db
+      if priority was claimed, backup now
+      need last-touch time for op:'+' items
+      on commit, clear flag
+    every N hours, find flagged projects
+      for changed parts & pages, xdDiff prev-rev working-rev, make backup msg, send, update last-backup revmap
+    on backup msg, merge changes into in-progress rev
+      if in-progress rev is sidelined, apply backup to sidelined rev
+      if nodeoffsets different, skip overlapping changes from lower-priority node
+  send outbound queue data post-sync
+  update progress bar
+  network connect, error handling
+  authenticate calling node
+  during sync pause services or return try-later error on svc request
+  block use of new node if main svc offline?
+  send file via zlib, open(O_NOATIME), posix_fadvise(DONTNEED)
+  support record/playback in /sync http requests
 
 websocket.MQ
+  fix copyQueue can fail if quiet list deletes queue too soon
+  reserve deleted aliases which have been used
   multiple apps/ports per node
   prompt user to restart or deactivate unused nodes
   suspend inactive users, purge updates & notify projects; returning user issues rejoin request
@@ -75,9 +180,14 @@ websocket.MQ
 applaunch
   prevent ipv6 and all-numeric addresses
 
+backup server
+  initial backup by sync node, encrypt pkg with user password
+  periodically connect to relay, store messages
+  on user restore, send pkg (node decrypts), send messages in blocks
+  ? node occasionally calls host, provides password, host integrates pending messages
 
 
-sidelining scratch space
+sidelining draft
 
 rev a1  prev _   map aa-af
 rev a2  prev a1  map aa
