@@ -1437,7 +1437,7 @@ var sProjects = {
           aDb.open(aPath, function(err) {
             if (err) throw err;
             var aSchemaSql = createSchema(Project.prototype.kSchema, aPath);
-            aSchemaSql += "INSERT OR IGNORE INTO revision (oid, parents) VALUES (' ', '{}');";
+            aSchemaSql += "INSERT OR IGNORE INTO revision (rowid, oid, parents) VALUES (1, ' ', '{}');";
             aDb.exec(aSchemaSql, noOpCallback, function() {
               aDb.close();
               fFileLoop(0, 0);
@@ -1906,7 +1906,7 @@ function Project(iRecord, iCallback) {
       if (/^#autogen/.test(iRecord.oid))
         return fDone();
       if (!aRevPending) {
-        that.db.exec("INSERT OR IGNORE INTO revision (oid, parents) VALUES (' ', '{}')", noOpCallback, fPendingRev);
+        that.db.exec("INSERT OR IGNORE INTO revision (rowid, oid, parents) VALUES (1, ' ', '{}')", noOpCallback, fPendingRev);
       } else {
         fs.readFile(sSendDir+aRevPending.oid.slice(1), function(err, buffer) {
           if (err && err.errno !== process.ENOENT) throw err;
