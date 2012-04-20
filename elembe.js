@@ -619,27 +619,50 @@ function updateSchema(iCallback) {
   aDb.open(sMainDir+'instance', function(err) {
     if (err) throw err;
     var aSql = createSchema(kSchema);
-    aDb.exec(aSql, noOpCallback, function() {
-      aDb.prepare("SELECT oid FROM projects.project", function(err, stmt) {
-        if (err) throw err;
-        stmt.results(function(err, list) {
-          if (err) throw err;
-          var aSchema = {filename:Project.prototype.kSchema.filename};
-          fProject(0);
-          function fProject(projN) {
-            if (projN < list.length) {
-              aSql = createSchema(aSchema, getPath(list[projN].oid));
-              aSql += "DETACH filename;\n";
-              aDb.exec(aSql, noOpCallback, function() {
-                fProject(++projN);
-              });
-              return;
+    aSql += "SELECT oid FROM projects.project;";
+    var aProjects = [];
+    aDb.exec(aSql, function(err, row) {
+      if (err) throw err;
+      if (row) aProjects.push(row.oid);
+    }, function() {
+      var aSchema = {filename:Project.prototype.kSchema.filename};
+      fProject(0);
+      function fProject(projN) {
+        if (projN < aProjects.length) {
+          aSql = createSchema(aSchema, getPath(aProjects[projN]));
+          aSql += "SELECT v FROM filename.schemav;";
+          var aSchemaV;
+          aDb.exec(aSql, function(err, row) {
+            if (err) throw err;
+            if (row) aSchemaV = row.v;
+          }, function() {
+            aSql = "BEGIN TRANSACTION;\n";
+            switch (aSchemaV) {
+            case '2012-03-07T00:07:44Z':
+              console.log('adding revision.node');
+              aSql += "CREATE TABLE filename.revisiontmp ("+fColumnList(Project.prototype.kSchema.filename.revision)+"); \
+                       INSERT INTO filename.revisiontmp SELECT oid, author, 0, date, map, parents, sideline FROM filename.revision ORDER BY rowid; \
+                       DROP TABLE filename.revision; \
+                       ALTER TABLE filename.revisiontmp RENAME TO revision;\n";
             }
-            aDb.close();
-            iCallback();
-          }
-        });
-      });
+            aSql += "UPDATE filename.schemav SET v = '"+kSchemaV.filename+"'; \
+                     COMMIT TRANSACTION; \
+                     DETACH filename;";
+            aDb.exec(aSql, noOpCallback, function() {
+              fProject(++projN);
+            });
+            function fColumnList(jso) {
+              var aL = '';
+              for (var a in jso)
+                aL += (aL && ', ') + (a && '['+a+'] ') + jso[a];
+              return aL;
+            }
+          });
+          return;
+        }
+        aDb.close();
+        iCallback();
+      }
     });
   });
 }
@@ -1953,7 +1976,7 @@ function Project(iRecord, iCallback) {
     delete Project.list[this.oid];
   };
 
-  kSchemaV.filename = '2012-03-07T00:07:44Z';
+  kSchemaV.filename = '2012-04-19T00:07:44Z';
 
   Project.prototype.kSchema = {
     instance: {},
@@ -1970,6 +1993,7 @@ function Project(iRecord, iCallback) {
       revision: {
         oid: 'text unique',       // ' ' for open revision
         author: 'text',
+        node: 'integer',
         date: 'text',      // iso/utc time
         map: 'text',        // json {project:{}, page:{oid:{op:'.', touch:'', part:{oid:{op:'!', touch:''}, ...}}, ...}}
         parents: 'text',   // { author:counter, ... }
@@ -2012,7 +2036,7 @@ function Project(iRecord, iCallback) {
         accept_select: "SELECT uid, left FROM member WHERE alias = ?",
         revision_hasMem: "SELECT 1 FROM member WHERE uid = ?",
         revision_hasRev: "SELECT rowid FROM revision WHERE oid = ?",
-        revision_insert: "INSERT INTO revision VALUES (?, ?, ?, ?, ?, ?)",
+        revision_insert: "INSERT INTO revision VALUES (?, ?, ?, ?, ?, ?, ?)",
         revision_insertDiff: "INSERT INTO diff VALUES ( ?1, ?3, ?2 )",
         revision_updateParentMap: "UPDATE revision SET parents = ? WHERE rowid = 1",
         revision_updateProject: "UPDATE projects.project SET data = ?, dataw = NULL WHERE oid = '"+that.oid+"'",
@@ -2099,7 +2123,7 @@ function Project(iRecord, iCallback) {
               iReq.jso.sideline = sideline;
               if (partlist)
                 iReq.jso.map.page.sideline = {part:partlist};
-              that.stmt.svcMsg.revision_insert.bindN((sideline ? '' : '!')+iReq.jso.oid, iReq.jso.author, iReq.jso.date,
+              that.stmt.svcMsg.revision_insert.bindN((sideline ? '' : '!')+iReq.jso.oid, iReq.jso.author, iReq.jso.node, iReq.jso.date,
                                                      JSON.stringify(iReq.jso.map), JSON.stringify(iReq.jso.parents), sideline || null);
               that.stmt.svcMsg.revision_insert.stepOnce(function(err, row) {
                 if (err) throw err;
@@ -2759,7 +2783,7 @@ function Project(iRecord, iCallback) {
   Project.prototype._updatePendingRev = function(iCallback) {
     var that = this;
     if (!that.stmt.setRevisionMap) {
-      that.db.prepare("UPDATE revision SET oid = ?, map = ?, date = ?, author = "+sNodeOffset+" WHERE rowid = 1", function(err, stmt) {
+      that.db.prepare("UPDATE revision SET oid = ?, map = ?, date = ?, node = "+sNodeOffset+" WHERE rowid = 1", function(err, stmt) {
         if (err) throw err;
         that.stmt.setRevisionMap = stmt;
         that._updatePendingRev(iCallback);
@@ -3273,7 +3297,7 @@ function Project(iRecord, iCallback) {
     var that = this;
     var aRev;
     that.db.exec("SAVEPOINT commit_revision; \
-                  INSERT INTO revision SELECT '!'||oid, '"+sUUId+"', date, map, parents, NULL FROM revision WHERE rowid = 1; \
+                  INSERT INTO revision SELECT '!'||oid, '"+sUUId+"', node, date, map, parents, NULL FROM revision WHERE rowid = 1; \
                   SELECT * FROM revision WHERE rowid = last_insert_rowid();", function(err, row) {
       if (err) throw err;
       if (row) aRev = row;
