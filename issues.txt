@@ -4,15 +4,19 @@ features
   notice to user and set read-only when loaded pages revised/sidelined
     push loaded page to rev cache on user ack
     not for revision author
-  enable defer of pendingRev elements
-    select all, page, part
-    request confirmation on commit
-  revert page/object in pendingRev
-  Sidelining
-    don't sideline pendingRev?
-    or flag when pendingRev sidelined
-      force save of client data before applying incoming rev?
-    parts of sidelined rev can be pushed into pendingrev
+  display map of pendingRev
+    enable revert page/object in pendingRev
+    enable defer of items
+      select all, page, part
+      request confirmation on commit
+  sidelining
+    don't sideline pendingRev
+      store conflicting revs (including sidelined parents) in map.conflict
+        in display map, highlight conflicting pages/parts
+        checkConflict() set map.conflict[rev]=1
+      on commit, warn of conflicts
+    force save of client data before applying incoming rev?
+    parts of previous/sidelined rev can be pushed into pendingrev
   desktop app support
     share/drop directory
       new files land in user scratch project
@@ -25,6 +29,7 @@ features
     my-profiles project
       editor app
   client
+    pin button on palettes to prevent close on project switch
     on revision, update page in titles palette
     prevent add member when no revision filed
     alternate page editors; pgedit code to module
@@ -56,10 +61,11 @@ code cleanup
   rename 'import' functions; move body of each case to separate function
   replace literals with constants
   apply all codestyle name conventions
-  turn into classes with methods: pendingRev
+  rev pendingRev.map in one place
 
 fix: fs.writeFile can leave partial files on crash
 fix: prevent concurrent access to projects db from Project methods
+     step catch locked error and retry
 fix: on sideline of rev with new page, prevent page data deletion
 
 createSchema include \n\n; to enable sql.replace() to include code in tx
@@ -138,17 +144,13 @@ node-to-node sync
   conflict mgmt
     find in-progress rev by WHERE rowid = 1//
     generate pendingrev oid & date on edit//
-    on arrival of rev, if oid found
-      if found rowid==1
-        checkconflict: if oid = inprogrev.oid, flagconflict and clear .pendingRev & rowid=1//
-      ?else if incoming date > found date replace it with this rev (if found row not sidelined, throw err)
-    ?on sideline of in-progress rev, distribute to nodes (unless already backed up)
-    on in-progress rev update, store date & local offset
-      on project open, if local offset != in-progress rev, inform user
-    revs include committing node offset
-      conflicting revs from different nodes resolved by later date, then higher-numbered node (log same-date coincidence)
-      don't sideline in-progress rev by same user with later date, unless due to sidelined ancestor
-        offer to modify in-progress rev by reverting objects from incoming rev missing from in-progress rev?
+    on arrival of rev by same author, and pendingRev conflict
+      don't sideline/delete; clear pendingRev.map and temp files of items with date <= incoming
+    on commit update oid if pendingRev.node!=sNodeOffset//
+    on in-progress rev update, store date & local offset//
+      on project open, if local offset != in-progress rev, inform user//
+    revs include last-edit node offset//
+      conflicting revs from same author resolved by later date, then higher-numbered node// (log same-date coincidence)
   backup in-progress revision data to user nodes
     do backup pass prior to sync?
     store last-backup revisionmap
