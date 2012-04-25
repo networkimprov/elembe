@@ -26,6 +26,8 @@ div.menuname:hover .menu { visibility:visible; }
 
 .revpanelrev[tag~="sideline"] { border-style: dashed; color:#888; }
 
+.revpanelrev[tag~="pending"] { background-color:#eee; border-top-color:#ccc; }
+
 
 #screenpane { position:fixed; top:0; left:0; width:100%; height:100%; z-index:0; }
 

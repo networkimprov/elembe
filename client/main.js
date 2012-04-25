@@ -384,9 +384,10 @@ suae.pMgr = {
   kRevPanelSpec: '<size w="250px" h="600px"></size>\
     <div class="pallabel" name="title" style="top:5px; left:5px;">Revision History</div>\
     <div class="palhtml" name="revcurr" style="top:25px; left:5px;">\
-      <div value="link"><a href="suae:current" onclick="suae.pMgr.markRevision(null); suae.pMgr.goRev(suae.pMgr.pjCurr.curr, null); return false;">Current</a></div></div>\
+      <div value="link"> &nbsp; <a href="suae:current" onclick="suae.pMgr.markRevision(null); suae.pMgr.goRev(suae.pMgr.pjCurr.curr, null); return false;">Current</a></div></div>\
     <div class="palscroll" style="top:50px; left:0; width:96%; height:550px;">\
-      <div class="palhtml" name="revlist" order="-"></div></div>',
+      <div class="palhtml" name="revpending" style="position:static"></div>\
+      <div class="palhtml" name="revlist" order="-" style="position:static"></div></div>',
 
   kMsgPanelSpec: '<size w="300px" h="600px"></size>\
     <div class="pallabel" name="title" style="top:5px; left:5px;">Message History</div>\
@@ -590,6 +591,9 @@ suae.pMgr = {
       case 'revisionsideline':
         this.sidelineRevision(this.pj[iJso.project], iJso.list[a].oid);
         break;
+      case 'revisionpending':
+        this.addRevision(this.pj[iJso.project], iJso.list[a], 'pending');
+        break;
       case 'message':
         var aMsg = '<div class="msgpanelitem">'+ iJso.list[a].html +'<span class="msgpaneldate">@'+ iJso.list[a].date +'</span></div>';
         this.pj[iJso.project].msgPanel.listSet('msglist', this.pj[iJso.project].msgPanelNext++, aMsg);
@@ -689,6 +693,8 @@ suae.pMgr = {
       iDiv.style.backgroundColor = '#ddf';
       iDiv.parentNode.style.borderWidth = '3px';
       iDiv.parentNode.style.padding = '1px';
+    } else {
+      iDiv = this.pjCurr.revPanel.listGet('revpending', ' ').lastChild;
     }
     this.pjCurr.revLink = iDiv;
   } ,
@@ -699,11 +705,13 @@ suae.pMgr = {
       aEl.setAttribute('tag', 'sideline');
   } ,
 
-  addRevision: function(iProj, iRev) {
-    var aHtml = '<div class="revpanelrev"'+ (iRev.sideline ? ' tag="sideline"' : '') +'>'+ iRev.date;
+  addRevision: function(iProj, iRev, iPending) {
+    var aHtml = '<div class="revpanelrev"'+ (iRev.sideline ? ' tag="sideline"' : iPending ? ' tag="pending"' : '') +'>'+ (iRev.date||'no changes');
 
+    if (iPending && !iRev.map)
+      iRev.map = {touch:null, page:{}};
     for (var aPg in iRev.map.page) {
-      var aClik = "suae.pMgr.markRevision(this.parentNode); suae.pMgr.goRev('"+ aPg +"','"+ iRev.oid +"'); return false;";
+      var aClik = "suae.pMgr.markRevision(this.parentNode); suae.pMgr.goRev('"+aPg+"',"+(iPending ? "null" : "'"+iRev.oid+"'")+"); return false;";
       aHtml += '<div><a href="suae:'+ iRev.oid +'" onclick="'+ aClik +'">'+ iProj.pageindex.find('name', aPg).text
         +'</a> @ '+ iRev.map.page[aPg].touch;
 
@@ -714,7 +722,10 @@ suae.pMgr = {
       aHtml += '</div>'
     }
     aHtml += '</div>'
-    iProj.revPanel.listSet('revlist', iRev.oid, aHtml);
+    if (iPending)
+      iProj.revPanel.listSet('revpending', ' ', aHtml);
+    else
+      iProj.revPanel.listSet('revlist', iRev.oid, aHtml);
   } ,
 
   goProj: function(iOid, iPage) {
@@ -762,7 +773,7 @@ suae.pMgr = {
             that.pj[iOid].userindex.add(jso.member[a].alias, jso.member[a]);
         }
         for (var a=0; a < jso.revision.length; ++a)
-          that.addRevision(that.pj[iOid], jso.revision[a]);
+          that.addRevision(that.pj[iOid], jso.revision[a], !a);
         var aIi = that.pj[iOid].pageindex.getList('name');
         that.pj[iOid].stateUpdate.data = jso.state || {type:'projstate', select:{sort:'name', page:aIi.length ? aIi[0].id : ''}, page:{}};
         if (that.loading === iOid)

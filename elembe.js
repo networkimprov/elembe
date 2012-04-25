@@ -1948,6 +1948,7 @@ function Project(iRecord, iCallback) {
         if (row) {
           row.map = row.map ? JSON.parse(row.map) : that.revisionMapInit();
           row.parents = JSON.parse(row.parents);
+          row.type = 'revisionpending';
           that.pendingRev = row;
         }
       }, fDone);
@@ -2730,7 +2731,7 @@ console.log(partlist);
         hasPage: "SELECT 1 AS haspage FROM page LIMIT 1",
         pageList: "SELECT oid, CASE WHEN dataw IS NULL THEN data ELSE dataw END AS data FROM page",
         memberList: "SELECT alias, joined, left, uid, uid='"+sUUId+"' AS useralias FROM member",
-        revisionList: "SELECT * FROM revision WHERE rowid != 1 ORDER BY date",
+        revisionList: "SELECT * FROM revision ORDER BY rowid",
         getState: "SELECT state FROM clientstate WHERE client = ?",
         getProjectData: "SELECT CASE WHEN dataw IS NULL THEN data ELSE dataw END AS data FROM projects.project WHERE oid = '"+that.oid+"'"
       };
@@ -2740,7 +2741,6 @@ console.log(partlist);
       });
       return;
     }
-    sClients.project(iReq.client, this.oid);
     that.stmt.subscribe.hasPage.stepOnce(function(err, row) {
       if (err) throw err;
       if (!row)
@@ -2749,6 +2749,7 @@ console.log(partlist);
         fResults();
     });
     function fResults() {
+      sClients.project(iReq.client, that.oid);
       if (that.pendingRev && that.pendingRev.node !== null && that.pendingRev.node !== sNodeOffset)
         Queue.post({type:'postMsg', client:null, project:that.oid, msg:'Project was last edited on a different node.', callback:noOpCallback});
       that.stmt.subscribe.pageList.results('data', function(errP, page) {
@@ -2799,7 +2800,10 @@ console.log(partlist);
       that.stmt.setRevisionMap.bind(3, that.pendingRev.date = (new Date).toISOString());
       that.stmt.setRevisionMap.stepOnce(function(err, row) {
         if (err) throw err;
-        that.db.exec("RELEASE update_pendingrev", noOpCallback, iCallback);
+        that.db.exec("RELEASE update_pendingrev", noOpCallback, function() {
+          sClients.notify(null, that.pendingRev, that.oid);
+          iCallback();
+        });
       });
     }
   };
@@ -3335,6 +3339,7 @@ console.log(partlist);
       that.db.exec("UPDATE revision SET oid = ' ', node = NULL, date = NULL, map = NULL, parents = '"+JSON.stringify(that.pendingRev.parents)+"' WHERE rowid = 1;\
                    "+(iNoSendCallback ? "UPDATE revision SET oid = substr(oid, 2) WHERE oid LIKE '!%';" : "")+"\
                     RELEASE commit_revision;", noOpCallback, function() {
+        sClients.notify(null, that.pendingRev, that.oid);
         if (iNoSendCallback)
           return iNoSendCallback(aRev);
         that._finishRevision(aMap, revdata && aRev, revdata, function() {
