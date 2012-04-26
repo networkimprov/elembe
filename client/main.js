@@ -208,6 +208,15 @@ var suae = {
   }
 };
 
+suae.kMonthAbv = [ 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec' ];
+
+suae.formatDate = function(iDate) {
+  if (!iDate) return null;
+  var aD = new Date(iDate);
+  var aY = aD.getTime() < (Date.now() - 11*30*24*60*60*1000) ? '.'+aD.getFullYear() : '';
+  return (aD.getDate() < 10 ? '&nbsp;' : '') + aD.getDate() +'.'+ this.kMonthAbv[aD.getMonth()] + aY +' '+ aD.toTimeString().slice(0,5);
+};
+
 suae.Index = function(iTxtSrc, iSpec) {
   for (var a in iSpec)
     iSpec[a] = { order:iSpec[a].charAt(0), type:iSpec[a].slice(1), o:[] };
@@ -706,19 +715,19 @@ suae.pMgr = {
   } ,
 
   addRevision: function(iProj, iRev, iPending) {
-    var aHtml = '<div class="revpanelrev"'+ (iRev.sideline ? ' tag="sideline"' : iPending ? ' tag="pending"' : '') +'>'+ (iRev.date||'no changes');
-
     if (iPending && !iRev.map)
       iRev.map = {touch:null, page:{}};
+
+    var aHtml = '<div class="revpanelrev"'+ (iRev.sideline ? ' tag="sideline"' : iPending ? ' tag="pending"' : '') +'>'+
+      (iRev.date ? '[comment] ' : '[no changes]') + (suae.formatDate(iRev.date)||'');
+
     for (var aPg in iRev.map.page) {
       var aClik = "suae.pMgr.markRevision(this.parentNode); suae.pMgr.goRev('"+aPg+"',"+(iPending ? "null" : "'"+iRev.oid+"'")+"); return false;";
-      aHtml += '<div><a href="suae:'+ iRev.oid +'" onclick="'+ aClik +'">'+ iProj.pageindex.find('name', aPg).text
-        +'</a> @ '+ iRev.map.page[aPg].touch;
-
-      for (var aPt in iRev.map.page[aPg].part) {
+      aHtml += '<div><a href="suae:'+ iRev.oid +'" onclick="'+ aClik +'">'+ iProj.pageindex.find('name', aPg).text +'</a> '+
+        suae.formatDate(iRev.map.page[aPg].touch);
+      for (var aPt in iRev.map.page[aPg].part)
         aHtml += '<div style="margin-left:2em">'+ iRev.map.page[aPg].part[aPt].op +' '+ iRev.map.page[aPg].part[aPt].class
-          +' @ '+ iRev.map.page[aPg].part[aPt].touch +'</div>';
-      }
+          +' '+ suae.formatDate(iRev.map.page[aPg].part[aPt].touch) +'</div>';
       aHtml += '</div>'
     }
     aHtml += '</div>'
