@@ -417,7 +417,7 @@ suae.paletteMgr = {
         return;
 
       case 'click':
-        var aNameVal = iEvt.target.id.split('.', 2);
+        var aNameVal = iEvt.target.id.slice(iEvt.target.id.indexOf('.')+1).split('..');
         switch(iEvt.target.className) {
         case 'palclose':
           this.div.style.visibility = null;
@@ -426,22 +426,22 @@ suae.paletteMgr = {
         case 'palgridrow':
           if (iEvt.target.parentNode.hasAttribute('disabled'))
             return;
-          this.setValue(aNameVal[1], aNameVal[2] = iEvt.target.id.slice(iEvt.target.id.indexOf('..')+2));
-          var aM = aNameVal[1].indexOf('-menu');
+          this.setValue(aNameVal[0], aNameVal[1]);
+          var aM = aNameVal[0].indexOf('-menu');
           if (aM >= 0) {
             iEvt.target.parentNode.previousSibling.textContent = iEvt.target.textContent;
-            aNameVal[1] = aNameVal[1].slice(0, aM);
+            aNameVal[0] = aNameVal[0].slice(0, aM);
           }
           break;
         case 'palbutton':
           if (iEvt.target.hasAttribute('disabled'))
             return;
-          aNameVal[2] = null;
+          aNameVal[1] = null;
           break;
         case 'palcheckbox':
           if (iEvt.target.hasAttribute('disabled'))
             return;
-          aNameVal[2] = !iEvt.target.textContent;
+          aNameVal[1] = !iEvt.target.textContent;
           iEvt.target.innerHTML = iEvt.target.textContent ? '' : '&times;';
           break;
         case 'palmenubtn':
@@ -462,7 +462,7 @@ suae.paletteMgr = {
           return;
         }
         try {
-        this.target.paletteEvent(this, aNameVal[1], aNameVal[2]);
+        this.target.paletteEvent(this, aNameVal[0], aNameVal[1]);
         } catch (aEr) {
           suae.pMgr.postMsg('paletteEvent(): '+aEr);
         }
