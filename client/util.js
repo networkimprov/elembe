@@ -105,6 +105,9 @@ suae.paletteMgr = {
       case 'palbutton':
       case 'palmenubtn':
         break;
+      case 'palcheckbox':
+        aEl.innerHTML = aEl.textContent ? '&times;' : '';
+        break;
       case 'paltext':
         aEl = ioDiv.insertBefore(document.createElement('input'), aEl);
         aEl.type = 'text';
@@ -260,6 +263,9 @@ suae.paletteMgr = {
         case 'palbutton':
           aEl.textContent = ''+iValue;
           break;
+        case 'palcheckbox':
+          aEl.innerHTML = iValue ? '&times;' : '';
+          break;
         case 'palmenu':
           this.setValue(iName+'-menu', iValue);
           aEl.firstChild.textContent = iValue === '' || iValue === null ? '' : document.getElementById(this.uid + iName+'-menu..'+ iValue).textContent;
@@ -286,6 +292,7 @@ suae.paletteMgr = {
           throw 'palette.enable(): widget '+iName+' not found in palette';
         switch (aEl.className) {
         case 'palbutton':
+        case 'palcheckbox':
         case 'paltext':
           aEl.style.color = iOn ? null : '#aaa';
           break;
@@ -337,7 +344,7 @@ suae.paletteMgr = {
           aC.innerHTML = iData;
         else
           aC.textContent = iData;
-        return;
+        return aC;
       case 'mov':
         if (!aC)
           throw 'palette.listMove(): item '+iValue+' not found in list '+iName;
@@ -372,6 +379,7 @@ suae.paletteMgr = {
     } ,
 
     event: function(iEvt) {
+      iEvt.stopPropagation();
       switch (iEvt.target.className) {
       case 'palette': case 'pallabel': case 'palgrid': case 'palpanel': case 'palsubpanel':
         return; //. shouldn't this be blocked by handleDrag?
@@ -429,6 +437,12 @@ suae.paletteMgr = {
           if (iEvt.target.hasAttribute('disabled'))
             return;
           aNameVal[2] = null;
+          break;
+        case 'palcheckbox':
+          if (iEvt.target.hasAttribute('disabled'))
+            return;
+          aNameVal[2] = !iEvt.target.textContent;
+          iEvt.target.innerHTML = iEvt.target.textContent ? '' : '&times;';
           break;
         case 'palmenubtn':
           if (iEvt.target.parentNode.hasAttribute('disabled'))
