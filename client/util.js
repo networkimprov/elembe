@@ -305,7 +305,7 @@ suae.paletteMgr = {
         if (iOn)
           aEl.removeAttribute('disabled');
         else
-          aEl.setAttribute('disabled', 'disabled');
+          aEl.setAttribute('disabled', '1');
       }
     } ,
 
