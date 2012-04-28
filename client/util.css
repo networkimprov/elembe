@@ -31,16 +31,18 @@
 
   .palclose { position:absolute; border: 1px solid #444; top:5px; right:5px; width:10px; height:10px; }
 
-  .pallabel, .paltext, .palbutton, .palmenu, .palgrid, .palpanel, .palhtml, .palscroll { position:absolute; z-index:1; }
+  .pallabel, .paltext, .palbutton, .palcheckbox, .palmenu, .palgrid, .palpanel, .palhtml, .palscroll { position:absolute; z-index:1; }
 
-  .palclose, .paltext, .palbutton, .palmenubtn, .palgridcell, .palgridrow { background-color:rgb(268,260,220); }
+  .palclose, .paltext, .palbutton, .palcheckbox, .palmenubtn, .palgridcell, .palgridrow { background-color:rgb(268,260,220); }
 
-  .palbutton, .palmenubtn, .palmenugrid, .palgridcell { border: 2px solid #aaa }
+  .palbutton, .palcheckbox, .palmenubtn, .palmenugrid, .palgridcell { border: 2px solid #aaa }
   .palgridrow { border: 0 solid #bbb; }
 
   .palbutton { -moz-border-radius: 4px; }
 
-  .palbutton { text-align:center; -moz-user-select:none; padding:3px; }
+  .palbutton, .palcheckbox { text-align:center; -moz-user-select:none; padding:3px; }
+
+  .palcheckbox { width:0.75em; height:0.75em; margin: 0.25em 0; }
 
   .palmenu { z-index:2; }
   .palmenubtn { width:100%; height:100%; -moz-user-select:none; padding:3px; white-space:nowrap; overflow:hidden; }
