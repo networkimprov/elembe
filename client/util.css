@@ -44,7 +44,7 @@
 
   .palbutton, .palcheckbox { text-align:center; -moz-user-select:none; padding:3px; }
 
-  .palcheckbox { width:0.75em; height:0.75em; margin: 0.25em 0; }
+  .palcheckbox { width:0.75em; height:0.75em; margin: 0.25em 0; line-height:0.85em; }
 
   .palmenu { z-index:2; }
   .palmenubtn { width:100%; height:100%; -moz-user-select:none; padding:3px; white-space:nowrap; overflow:hidden; }

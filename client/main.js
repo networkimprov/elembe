@@ -720,17 +720,20 @@ suae.pMgr = {
       iRev.map = {touch:null, page:{}};
 
     var aId = iPending ? ' ' : iRev.oid;
-    var aHtml = '<div class="revpanelrev"'+ (iRev.sideline ? ' tag="sideline"' : iPending ? ' tag="pending"' : '') +'><div style="float:left; width:2em; line-height:0.85;"></div>'+
+    var aSpacer = '<div class="pallabel" style="position:static;">&nbsp;</div>';
+
+    var aHtml = '<div class="revpanelrev"'+ (iRev.sideline ? ' tag="sideline"' : iPending ? ' tag="pending"' : '') +'>'+
+      '<div style="float:left; width:2em;">&nbsp;</div>'+
       (iRev.date ? '[comment] ' : '[no changes]') + (suae.formatDate(iRev.date)||'');
-    var aPal = '<div class="palcheckbox" name="ck_'+aId+'" style="position:static"'+(iRev.map.touch ? '' : ' disabled="1"')+'></div>';
+    var aPal = iRev.map.touch ? '<div class="palcheckbox" name="ck_'+aId+'" style="position:static"></div>' : aSpacer;
 
     for (var aPg in iRev.map.page) {
       var aClik = "suae.pMgr.markRevision(this.parentNode); suae.pMgr.goRev('"+aPg+"',"+(iPending ? "null" : "'"+iRev.oid+"'")+"); return false;";
       aHtml += '<div><a href="suae:'+ iRev.oid +'" onclick="'+ aClik +'">'+ iProj.pageindex.find('name', aPg).text +'</a> '+
-        suae.formatDate(iRev.map.page[aPg].touch);
-      aPal += '<div class="palcheckbox" name="ck_'+aId+'_'+aPg+'" style="position:static"'+(iRev.map.page[aPg].op !== '.' ? '' : ' disabled="1"')+'></div>';
+        (suae.formatDate(iRev.map.page[aPg].touch)||'');
+      aPal += iRev.map.page[aPg].op !== '.' ? '<div class="palcheckbox" name="ck_'+aId+'_'+aPg+'" style="position:static"></div>' : aSpacer;
       for (var aPt in iRev.map.page[aPg].part) {
-        aHtml += '<div style="margin-left:2em">'+ iRev.map.page[aPg].part[aPt].op +' '+ iRev.map.page[aPg].part[aPt].class
+        aHtml += '<div>'+ iRev.map.page[aPg].part[aPt].op +' '+ iRev.map.page[aPg].part[aPt].class
           +' '+ suae.formatDate(iRev.map.page[aPg].part[aPt].touch) +'</div>';
         aPal += '<div class="palcheckbox" name="ck_'+aId+'_'+aPg+'_'+aPt+'" style="position:static"></div>';
       }
@@ -738,7 +741,7 @@ suae.pMgr = {
     }
     aHtml += '</div>';
     var aDiv = iProj.revPanel.listSet(iPending ? 'revpending' : 'revlist', aId, aHtml);
-    iProj.revPalette[aId] = suae.paletteMgr.embed(aPal, aDiv.firstChild.firstChild, this);
+    iProj.revPalette[aId] = iRev.date ? suae.paletteMgr.embed(aPal, aDiv.firstChild.firstChild, this) : null;
     if (iPending)
       this.updateCheckList(iProj, aId, null);
   } ,
@@ -757,12 +760,14 @@ suae.pMgr = {
     } else if (aL[0] !== iProj.revCheckList.oid) {
       var aPal = iProj.revPalette[iProj.revCheckList.oid];
       for (var aPg in iProj.revCheckList.page) {
-        aPal.setValue('ck_'+iProj.revCheckList.oid+'_'+aPg, 0);
+        if (iProj.revCheckList.page[aPg].op)
+          aPal.setValue('ck_'+iProj.revCheckList.oid+'_'+aPg, 0);
         for (var aPt in iProj.revCheckList.page[aPg].part)
           aPal.setValue('ck_'+iProj.revCheckList.oid+'_'+aPg+'_'+aPt, 0);
         delete iProj.revCheckList.page[aPg];
       }
-      aPal.setValue('ck_'+iProj.revCheckList.oid, 0);
+      if (iProj.revCheckList.op)
+        aPal.setValue('ck_'+iProj.revCheckList.oid, 0);
       iProj.revCheckList.op = false;
     }
     iProj.revCheckList.oid = aL[0];
