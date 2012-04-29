@@ -394,6 +394,7 @@ suae.pMgr = {
     <div class="pallabel" name="title" style="top:5px; left:5px;">Revision History</div>\
     <div class="palhtml" name="revcurr" style="top:25px; left:5px;">\
       <div value="link"> &nbsp; <a href="suae:current" onclick="suae.pMgr.markRevision(null); suae.pMgr.goRev(suae.pMgr.pjCurr.curr, null); return false;">Current</a></div></div>\
+    <div class="palbutton" name="revert" style="top:20px; right:6px; width:6em;" disabled="1">Revert</div>\
     <div class="palscroll" style="top:50px; left:0; width:96%; height:550px;">\
       <div class="palhtml" name="revpending" style="position:static"></div>\
       <div class="palhtml" name="revlist" order="-" style="position:static"></div></div>',
@@ -718,23 +719,71 @@ suae.pMgr = {
     if (iPending && !iRev.map)
       iRev.map = {touch:null, page:{}};
 
-    var aHtml = '<div class="revpanelrev"'+ (iRev.sideline ? ' tag="sideline"' : iPending ? ' tag="pending"' : '') +'>'+
+    var aId = iPending ? ' ' : iRev.oid;
+    var aHtml = '<div class="revpanelrev"'+ (iRev.sideline ? ' tag="sideline"' : iPending ? ' tag="pending"' : '') +'><div style="float:left; width:2em; line-height:0.85;"></div>'+
       (iRev.date ? '[comment] ' : '[no changes]') + (suae.formatDate(iRev.date)||'');
+    var aPal = '<div class="palcheckbox" name="ck_'+aId+'" style="position:static"'+(iRev.map.touch ? '' : ' disabled="1"')+'></div>';
 
     for (var aPg in iRev.map.page) {
       var aClik = "suae.pMgr.markRevision(this.parentNode); suae.pMgr.goRev('"+aPg+"',"+(iPending ? "null" : "'"+iRev.oid+"'")+"); return false;";
       aHtml += '<div><a href="suae:'+ iRev.oid +'" onclick="'+ aClik +'">'+ iProj.pageindex.find('name', aPg).text +'</a> '+
         suae.formatDate(iRev.map.page[aPg].touch);
-      for (var aPt in iRev.map.page[aPg].part)
+      aPal += '<div class="palcheckbox" name="ck_'+aId+'_'+aPg+'" style="position:static"'+(iRev.map.page[aPg].op !== '.' ? '' : ' disabled="1"')+'></div>';
+      for (var aPt in iRev.map.page[aPg].part) {
         aHtml += '<div style="margin-left:2em">'+ iRev.map.page[aPg].part[aPt].op +' '+ iRev.map.page[aPg].part[aPt].class
           +' '+ suae.formatDate(iRev.map.page[aPg].part[aPt].touch) +'</div>';
-      aHtml += '</div>'
+        aPal += '<div class="palcheckbox" name="ck_'+aId+'_'+aPg+'_'+aPt+'" style="position:static"></div>';
+      }
+      aHtml += '</div>';
     }
-    aHtml += '</div>'
+    aHtml += '</div>';
+    var aDiv = iProj.revPanel.listSet(iPending ? 'revpending' : 'revlist', aId, aHtml);
+    iProj.revPalette[aId] = suae.paletteMgr.embed(aPal, aDiv.firstChild.firstChild, this);
     if (iPending)
-      iProj.revPanel.listSet('revpending', ' ', aHtml);
-    else
-      iProj.revPanel.listSet('revlist', iRev.oid, aHtml);
+      this.updateCheckList(iProj, aId, null);
+  } ,
+
+  updateCheckList: function(iProj, iName, iValue) {
+    if (iValue === null) {
+      if (iProj.revCheckList && iProj.revCheckList.oid === iName) {
+        iProj.revPanel.enable('revert', false);
+        iProj.revCheckList = null;
+      }
+      return;
+    }
+    var aL = iName.split('_');
+    if (!iProj.revCheckList) {
+      iProj.revCheckList = { oid:null, page:{} };
+    } else if (aL[0] !== iProj.revCheckList.oid) {
+      var aPal = iProj.revPalette[iProj.revCheckList.oid];
+      for (var aPg in iProj.revCheckList.page) {
+        aPal.setValue('ck_'+iProj.revCheckList.oid+'_'+aPg, 0);
+        for (var aPt in iProj.revCheckList.page[aPg].part)
+          aPal.setValue('ck_'+iProj.revCheckList.oid+'_'+aPg+'_'+aPt, 0);
+        delete iProj.revCheckList.page[aPg];
+      }
+      aPal.setValue('ck_'+iProj.revCheckList.oid, 0);
+      iProj.revCheckList.op = false;
+    }
+    iProj.revCheckList.oid = aL[0];
+    if (!aL[1]) {
+      iProj.revCheckList.op = iValue;
+    } else {
+      if (!iProj.revCheckList.page[aL[1]])
+        iProj.revCheckList.page[aL[1]] = { op:false, part:{} };
+      if (!aL[2])
+        iProj.revCheckList.page[aL[1]].op = iValue;
+      else if (iValue)
+        iProj.revCheckList.page[aL[1]].part[aL[2]] = true;
+      else
+        delete iProj.revCheckList.page[aL[1]].part[aL[2]];
+      for (var anyPt in iProj.revCheckList.page[aL[1]].part) break;
+      if (!anyPt && !iProj.revCheckList.page[aL[1]].op)
+        delete iProj.revCheckList.page[aL[1]];
+    }
+    for (var anyPg in iProj.revCheckList.page) break;
+    iProj.revPanel.enable('revert', anyPg || iProj.revCheckList.op);
+    iProj.revPanel.setValue('revert', aL[0] === ' ' ? 'Revert' : 'Recall');
   } ,
 
   goProj: function(iOid, iPage) {
@@ -759,6 +808,8 @@ suae.pMgr = {
         menu: this.menuTmpl.cloneNode(true),
         altPalette: suae.paletteMgr.create('', 0, 0, this),
         revPanel: suae.paletteMgr.create(this.kRevPanelSpec, 250, 600, this),
+        revPalette: {}, // palettes in revision history
+        revCheckList: null, // palette results
         msgPanel: suae.paletteMgr.create(this.kMsgPanelSpec, 5, 5, this),
         msgPanelNext: 0,
         namesPal: suae.paletteMgr.create(this.kNamesPalSpec, 40, 300, this),
@@ -1060,7 +1111,10 @@ suae.pMgr = {
       this.newProj();
       break;
     default:
-      throw 'pMgr.paletteEvent(): widget '+iName+' not known';
+      if (/^ck_/.test(iName))
+        this.updateCheckList(this.pjCurr, iName.slice(3), iValue);
+      else
+        throw 'pMgr.paletteEvent(): widget '+iName+' not known';
     }
   } ,
 
