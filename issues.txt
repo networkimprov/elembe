@@ -1,11 +1,18 @@
 Elembe Issues
 
 features
+  project data has .home page oid
+    checkbox on names palette to make current pg home
+  part description in revision.map
   notice to user and set read-only when loaded pages revised/sidelined
     push loaded page to rev cache on user ack
     not for revision author
-  display map of pendingRev
-    enable revert page/object in pendingRev
+  revision history
+    tag current revision div for bgcolor
+    if current page in current revision, highlight page div
+  map of pendingRev
+    undo revert?
+    ?allow sideline instead of revert; distribute to nodes
     enable defer of items
       select all, page, part
       request confirmation on commit
@@ -17,6 +24,8 @@ features
       on commit, warn of conflicts
     force save of client data before applying incoming rev?
     parts of previous/sidelined rev can be pushed into pendingrev
+      disable recall checkboxes, enable when new rev replaces object
+        keep {oid:last-rev, ...} table to lookup last-rev of objects in new rev
   desktop app support
     share/drop directory
       new files land in user scratch project
@@ -63,7 +72,9 @@ code cleanup
   apply all codestyle name conventions
   rev pendingRev.map in one place
 
+fix: writePart reliability: store tmp file, update map with flag, finishPart, check map on start
 fix: fs.writeFile can leave partial files on crash
+fix: external app save right before commit can omit part from map
 fix: prevent concurrent access to projects db from Project methods
      step catch locked error and retry
 fix: on sideline of rev with new page, prevent page data deletion
@@ -84,6 +95,7 @@ verify client message parameters
 
 factory-reset op
 
+samba share data/files, move cache dirs
 purge algorithms for RevisionCache & EditCache
   on foreign rev and file open, set .w file read-only and mv to revcache
 
