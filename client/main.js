@@ -393,7 +393,7 @@ suae.pMgr = {
   kRevPanelSpec: '<size w="250px" h="600px"></size>\
     <div class="pallabel" name="title" style="top:5px; left:5px;">Revision History</div>\
     <div class="palhtml" name="revcurr" style="top:25px; left:5px;">\
-      <div value="link"> &nbsp; <a href="suae:current" onclick="suae.pMgr.markRevision(null); suae.pMgr.goRev(suae.pMgr.pjCurr.curr, null); return false;">Current</a></div></div>\
+      <div value="link"> &nbsp; <a href="suae:current" onclick="return suae.pMgr.onClickRevision(null, suae.pMgr.pjCurr.curr, null);">Current</a></div></div>\
     <div class="palbutton" name="revert" style="top:20px; right:6px; width:6em;" disabled="1">Revert</div>\
     <div class="palscroll" style="top:50px; left:0; width:96%; height:550px;">\
       <div class="palhtml" name="revpending" style="position:static"></div>\
@@ -604,6 +604,28 @@ suae.pMgr = {
       case 'revisionpending':
         this.addRevision(this.pj[iJso.project], iJso.list[a], 'pending');
         break;
+      case 'reverted':
+        if (iJso.list[a].project) {
+          this.updateNavPanels(iJso.list[a].project, true);
+          this.pj[iJso.project].update.data = iJso.list[a].project.data;
+          if (this.pjCurr === this.pj[iJso.project])
+            this.pjCurr.namesPal.setValue('pjname', iJso.list[a].project.data.name);
+        }
+        for (var aPg in iJso.list[a].page) {
+          if (typeof iJso.list[a].page[aPg] === 'object') {
+            suae.pMgr.revisePage(this.pj[iJso.project], aPg);
+            if (iJso.list[a].page[aPg]) {
+              this.updatePagePanels(iJso.project, iJso.list[a].page[aPg], 'replace');
+              if (this.pjCurr.curr === aPg)
+                this.pjCurr.namesPal.setValue('pgname', iJso.list[a].page[aPg].data.name);
+            }
+          } else {
+            this.updatePagePanels(iJso.project, {oid:aPg}, 'replace');
+            if (this.pj[iJso.project].page[aPg])
+              this.releasePage(this.pj[iJso.project], this.pj[iJso.project].page[aPg]);
+          }
+        }
+        break;
       case 'message':
         var aMsg = '<div class="msgpanelitem">'+ iJso.list[a].html +'<span class="msgpaneldate">@'+ iJso.list[a].date +'</span></div>';
         this.pj[iJso.project].msgPanel.listSet('msglist', this.pj[iJso.project].msgPanelNext++, aMsg);
@@ -663,15 +685,20 @@ suae.pMgr = {
     var aId = iJso.oid || iJso.project;
     if (iReplace)
       aIdx.remove(aId);
-    aIdx.add(aId, iJso.data);
+    if (iJso.data)
+      aIdx.add(aId, iJso.data);
     var aSet = iProjOid ? 'page' : 'nav';
     var aPal = !iProjOid || iProjOid === this.pjCurr.oid ? suae.menus[aSet] : this.pj[iProjOid].altPalette;
     if (aPal !== suae.menus[aSet])
       aPal.appendWidget(this.pj[iProjOid].menu);
     for (var aI in aIdx.sort) {
       var aName = aSet + aI +'list';
-      aPal.listSet(aName, aId, iJso.data.name);
-      aPal.listMove(aName, aId, aIdx.find(aI, aId).pos);
+      if (iJso.data) {
+        aPal.listSet(aName, aId, iJso.data.name);
+        aPal.listMove(aName, aId, aIdx.find(aI, aId).pos);
+      } else {
+        aPal.listDelete(aName, aId);
+      }
     }
   } ,
 
@@ -699,12 +726,14 @@ suae.pMgr = {
       this.pjCurr.revLink.parentNode.style.borderWidth = null;
       this.pjCurr.revLink.parentNode.style.padding = null;
     }
+    //if (!iDiv)
+    //  for (var a=this.pjCurr.revPanel.listGet('revpending', ' ').firstChild.nextSibling.nextSibling; a; a=a.nextSibling)
+    //    if (a.firstChild.href === 'suae:'+this.pjCurr.curr)
+    //      { iDiv = a; break; }
     if (iDiv) {
       iDiv.style.backgroundColor = '#ddf';
       iDiv.parentNode.style.borderWidth = '3px';
       iDiv.parentNode.style.padding = '1px';
-    } else {
-      iDiv = this.pjCurr.revPanel.listGet('revpending', ' ').lastChild;
     }
     this.pjCurr.revLink = iDiv;
   } ,
@@ -720,17 +749,21 @@ suae.pMgr = {
       iRev.map = {touch:null, page:{}};
 
     var aId = iPending ? ' ' : iRev.oid;
+    for (var aHasMap in iRev.map.page) break;
+    aHasMap = aHasMap || iRev.map.touch;
     var aSpacer = '<div class="pallabel" style="position:static;">&nbsp;</div>';
 
     var aHtml = '<div class="revpanelrev"'+ (iRev.sideline ? ' tag="sideline"' : iPending ? ' tag="pending"' : '') +'>'+
       '<div style="float:left; width:2em;">&nbsp;</div>'+
-      (iRev.date ? '[comment] ' : '[no changes]') + (suae.formatDate(iRev.date)||'');
+      (aHasMap ? '[comment] '+suae.formatDate(iRev.date) : '[no changes]');
     var aPal = iRev.map.touch ? '<div class="palcheckbox" name="ck_'+aId+'" style="position:static"></div>' : aSpacer;
 
     for (var aPg in iRev.map.page) {
-      var aClik = "suae.pMgr.markRevision(this.parentNode); suae.pMgr.goRev('"+aPg+"',"+(iPending ? "null" : "'"+iRev.oid+"'")+"); return false;";
-      aHtml += '<div><a href="suae:'+ iRev.oid +'" onclick="'+ aClik +'">'+ iProj.pageindex.find('name', aPg).text +'</a> '+
-        (suae.formatDate(iRev.map.page[aPg].touch)||'');
+      if (iPending && iProj.page[aPg])
+        this.setReverted(iProj.page[aPg], iRev.map.page[aPg].flag);
+      var aClik = "return suae.pMgr.onClickRevision(this.parentNode, this.href.slice(5),"+(iPending ? "null" : "'"+iRev.oid+"'")+")";
+      aHtml += '<div><a href="suae:'+aPg+'" onclick="'+aClik+'"'+(iRev.map.page[aPg].flag ? ' style="text-decoration:line-through"' : '')+'>'+
+        iProj.pageindex.find('name', aPg).text +'</a> '+ (suae.formatDate(iRev.map.page[aPg].touch)||'');
       aPal += iRev.map.page[aPg].op !== '.' ? '<div class="palcheckbox" name="ck_'+aId+'_'+aPg+'" style="position:static"></div>' : aSpacer;
       for (var aPt in iRev.map.page[aPg].part) {
         aHtml += '<div>'+ iRev.map.page[aPg].part[aPt].op +' '+ iRev.map.page[aPg].part[aPt].class
@@ -741,9 +774,15 @@ suae.pMgr = {
     }
     aHtml += '</div>';
     var aDiv = iProj.revPanel.listSet(iPending ? 'revpending' : 'revlist', aId, aHtml);
-    iProj.revPalette[aId] = iRev.date ? suae.paletteMgr.embed(aPal, aDiv.firstChild.firstChild, this) : null;
+    iProj.revPalette[aId] = aHasMap ? suae.paletteMgr.embed(aPal, aDiv.firstChild.firstChild, this) : null;
     if (iPending)
       this.updateCheckList(iProj, aId, null);
+  } ,
+
+  onClickRevision: function(iParentNode, iPg, iRev) {
+    this.markRevision(iParentNode);
+    this.goRev(iPg, iRev);
+    return false;
   } ,
 
   updateCheckList: function(iProj, iName, iValue) {
@@ -942,17 +981,18 @@ suae.pMgr = {
         this.navState.history.i.push(aI);
       else
         this.navState.history.i[aN] = aI;
-      this.navState.history.n = ++aN;
-      this.navState.history.len = aN;
+      this.navState.history.len = this.navState.history.n = ++aN;
       suae.touch(this.navUpdate);
       suae.menus.nav.enable('pjback', aN > 1);
       suae.menus.nav.enable('pjforw', false);
     }
+    var aIdxItem = this.pjCurr.pageindex.find('name', iOid);
     suae.paletteMgr.closeAllExcept(this.pjCurr.revPanel);
     this.pjCurr.namesPal.setValue('pjname', this.pjCurr.update.data.name);
-    this.pjCurr.namesPal.setValue('pgname', this.pjCurr.pageindex.find('name', iOid).text);
+    this.pjCurr.namesPal.setValue('pgname', aIdxItem ? aIdxItem.text : '[deleted]');
+    this.pjCurr.namesPal.enable('pgtext', !!aIdxItem);
     this.pjCurr.curr = iOid;
-    suae.menus.page.setValue('page'+ this.pjCurr.stateUpdate.data.select.sort +'list', iOid);
+    suae.menus.page.setValue('page'+ this.pjCurr.stateUpdate.data.select.sort +'list', aIdxItem ? iOid : null);
     this.pjCurr.stateUpdate.data.select.page = iOid;
     this.touchState(this.pjCurr.stateUpdate.data);
     var aState = this.pjCurr.stateUpdate.data.page[iOid];
@@ -1115,6 +1155,9 @@ suae.pMgr = {
     case 'pjnew':
       this.newProj();
       break;
+    case 'revert':
+      suae.request({type:'revert', project:this.pjCurr.oid, map:this.pjCurr.revCheckList}, function() {});
+      break;
     default:
       if (/^ck_/.test(iName))
         this.updateCheckList(this.pjCurr, iName.slice(3), iValue);
@@ -1129,6 +1172,9 @@ suae.pMgr = {
     ><div class="screenclip"\
       ><div class="screendata" name="pageId" style="top:0; left:0;"\
         ><div class="dragbox" style=""></div></div></div></div>' ,
+
+  kRevertHtml: '<div class="screenshade"\
+    ><div>Page Reverted</div></div>' ,
 
   kPartHtml: '<div class="part" pid="partId" style=""\
     ><div class="partframe"></div\
@@ -1214,10 +1260,11 @@ suae.pMgr = {
       } else {
         var aReq = {type:iRevId?'readPageRevision':'subscribePage', project:iProj.oid, page:iOid, revision:iRevId};
         suae.request(aReq, function(jso) {
-          aPage.update = iRevId ? null : {type:'writePage', project:iProj.oid, page:iOid, data:jso};
-          aPage.layout = jso.layout;
+          if (jso.reverted)
+            that.setReverted(aPage, true);
+          aPage.update = !jso.layout || iRevId ? null : {type:'writePage', project:iProj.oid, page:iOid, data:jso};
+          aPage.layout = jso.layout || [];
           aPage.loadCount = aPage.layout.length;
-
           if (aPage.screen.parentNode)
             aPlaceParts();
         });
@@ -1282,17 +1329,29 @@ suae.pMgr = {
   } ,
 
   releasePage: function(iProj, iPage) {
-    for (var a=0; a < iPage.layout.length; ++a) {
-      delete iProj.part[iPage.layout[a].oid].instance[iPage.layout[a].pid];
-      for (var aI in iProj.part[iPage.layout[a].oid].instance) { break; }
+    for (var aPt; aPt = iPage.layout.pop(); ) {
+      delete iProj.part[aPt.oid].instance[aPt.pid];
+      var aI = null;
+      for (aI in iProj.part[aPt.oid].instance) break;
       if (!aI)
-        delete iProj.part[iPage.layout[a].oid];
-      var aApp = suae.lookupApp(iPage.layout[a].class);
+        delete iProj.part[aPt.oid];
+      var aApp = suae.lookupApp(aPt.class);
       try {
-      aApp.close(iPage.pgid, iPage.layout[a].pid);
+      aApp.close(iPage.pgid, aPt.pid);
       } catch (aEr) {
         this.postMsg('App error: '+aApp.kAppName+'.close() '+aEr);
       }
+    }
+    iPage.update = null;
+  } ,
+
+  setReverted: function(iPage, iReverted) {
+    var aHasDiv = iPage.screen.firstChild.lastChild.className === 'screenshade';
+    if (iReverted && !aHasDiv) {
+      this.htmlFactory.innerHTML = this.kRevertHtml;
+      iPage.screen.firstChild.appendChild(this.htmlFactory.firstChild);
+    } else if (!iReverted && aHasDiv) {
+      iPage.screen.firstChild.removeChild(iPage.screen.firstChild.lastChild);
     }
   } ,
 

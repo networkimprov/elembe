@@ -2800,10 +2800,7 @@ console.log(partlist);
       that.stmt.setRevisionMap.bind(3, that.pendingRev.date = (new Date).toISOString());
       that.stmt.setRevisionMap.stepOnce(function(err, row) {
         if (err) throw err;
-        that.db.exec("RELEASE update_pendingrev", noOpCallback, function() {
-          sClients.notify(null, that.pendingRev, that.oid);
-          iCallback();
-        });
+        that.db.exec("RELEASE update_pendingrev", noOpCallback, iCallback);
       });
     }
   };
@@ -2827,6 +2824,7 @@ console.log(partlist);
         that._updatePendingRev(function() {
           that.db.exec("COMMIT TRANSACTION", noOpCallback, function() {
             sClients.notify(iReq.client, {type:'projectdata', oid:that.oid, data:iReq.data});
+            sClients.notify(null, that.pendingRev, that.oid);
             sClients.respond(iReq, {status:'ok'});
           });
         });
@@ -2846,7 +2844,11 @@ console.log(partlist);
     var that = this;
     that.db.exec(this.kNewPageSql, function(stepErr, row) {
       if (stepErr) throw stepErr;
-      if (row) aPage = row;
+      if (row) {
+        aPage = row;
+        aPage.data = JSON.parse(aPage.data);
+        aPage.type = 'page';
+      }
     }, function() {
       if (iFirstpageCallback)
         that.pendingRev.map.touch = (new Date).toISOString();
@@ -2854,9 +2856,7 @@ console.log(partlist);
       that._updatePendingRev(function() {
         that.db.exec("COMMIT TRANSACTION", noOpCallback, iFirstpageCallback || function() {
           sClients.page(iReq.client, that.oid, aPage.oid);
-          aPage.data = JSON.parse(aPage.data);
-          aPage.type = 'page';
-          sClients.notify(iReq, aPage, that.oid);
+          sClients.notify(iReq, [aPage, that.pendingRev], that.oid);
         });
       });
     });
@@ -2877,9 +2877,13 @@ console.log(partlist);
     that.stmt.subscribePage.bind(1, iReq.page);
     that.stmt.subscribePage.stepOnce(function(stepErr, row) {
       if (stepErr) throw stepErr;
+      if (!row)
+        return sClients.respond(iReq, {reverted:true});
       sClients.page(iReq.client, that.oid, iReq.page);
       row.layout = JSON.parse(row.layout);
       row.data = JSON.parse(row.data);
+      if (that.pendingRev.map.page[iReq.page] && that.pendingRev.map.page[iReq.page].flag)
+        row.reverted = true;
       sClients.respond(iReq, row, 'sequence');
       that._sendParts(row.layout, 0, iReq);
     });
@@ -2912,6 +2916,7 @@ console.log(partlist);
           that.db.exec("COMMIT TRANSACTION", noOpCallback, function() {
             iReq.data.type = 'pagelayout';
             sClients.notify(iReq.client, iReq.data, that.oid, !iReq.data.data && iReq.page);
+            sClients.notify(null, that.pendingRev, that.oid);
             sClients.respond(iReq, {status:'ok'});
           });
         });
@@ -2950,6 +2955,11 @@ console.log(partlist);
         that.stmt.readPageRevision.getPage.bind(1, iReq.page);
         that.stmt.readPageRevision.getPage.stepOnce(function(err, row) {
           if (err) throw err;
+          if (!row || !row.layout) {
+            var aResponse = { oid:iReq.page, revision:iReq.revision, layout:null };
+            aResponse.reverted = !row || that.pendingRev.map.page[iReq.page].flag ? true : undefined; 
+            return sClients.respond(iReq, aResponse);
+          }
           that.handle_readPageRevision(iReq, { data:JSON.parse(row.data), layout:JSON.parse(row.layout), revparts:{} });
         });
       });
@@ -3140,26 +3150,125 @@ console.log(partlist);
   Project.prototype.handle_writePart = function(iReq) {
     var that = this;
     var aPath = makePath(iReq.part);
-    if (iReq.data)
-      fs.writeFile(aPath+'.w', iReq.data, 'utf8', function(fileErr) {
-        if (fileErr) throw fileErr;
+    var aHasPage;
+    that.db.exec("SELECT 1 AS haspage FROM page WHERE oid = '"+iReq.page+"'", function(err, row) {
+      if (err) throw err;
+      if (row) aHasPage = true;
+    }, function() {
+      if (!aHasPage) {
+        sClients.respond(iReq, {status:'fail'});
+        console.log('got writePart for non-existant/reverted page');
+        return;
+      }
+      if (iReq.data)
+        fs.writeFile(aPath+'.w', iReq.data, 'utf8', function(fileErr) {
+          if (fileErr) throw fileErr;
+          fMap();
+        });
+      else
         fMap();
-      });
-    else
-      fMap();
+    });
     function fMap() {
       fs.stat(aPath, function(statErr, stats) {
         if (!that.pendingRev.map.page[iReq.page])
           that.pendingRev.map.page[iReq.page] = {op:'.', touch:null, part:{}};
+        else
+          delete that.pendingRev.map.page[iReq.page].flag;
         if (!that.pendingRev.map.page[iReq.page].part[iReq.part])
           that.pendingRev.map.page[iReq.page].part[iReq.part] = {op:statErr ? '+' : '!', touch:null};
         that.pendingRev.map.page[iReq.page].part[iReq.part].touch = (new Date).toISOString();
         that._updatePendingRev(function() {
           sClients.notify(iReq.client, {type:'part', oid:iReq.part, data:Buffer.isBuffer(iReq.data) ? null : iReq.data}, that.oid, iReq.page);
+          sClients.notify(null, that.pendingRev, that.oid);
           sClients.respond(iReq, {status:'ok'});
         });
       });
     }
+  };
+
+  Project.prototype.revert = { autogen:true, map:'object' };
+  Project.prototype.handle_revert = function(iReq) {
+    var that = this;
+    var aSql = "SELECT oid, data, dataw, layout, layoutw FROM page WHERE";
+    for (var aPg in iReq.map.page)
+      aSql += (aSql.lastIndexOf("'") > 0 ? " OR " : " ") + "oid = '"+aPg+"'";
+    aSql = aPg ? aSql+";\n" : "";
+    aSql += "SELECT oid, data, dataw FROM projects.project WHERE oid = '"+that.oid+"';";
+    var aProject, aPage = {};
+    that.db.exec(aSql, function(err, row) {
+      if (err) throw err;
+      if (!row) return;
+      if ('layout' in row)
+        aPage[row.oid] = row;
+      else
+        aProject = row;
+      for (var a in row)
+        if (a !== 'oid')
+          row[a] = JSON.parse(row[a] || (a.slice(0,4) === 'data' ? '{}' : '[]'));
+    }, function() {
+      that.pendingRev.map.page.sideline = {part:{}};
+      for (var aNotFirstRev in that.pendingRev.parents) break;
+      aSql = "BEGIN TRANSACTION;\n";
+      var aReverted = { type:'reverted', project:null, page:{} };
+      if (iReq.map.op) {
+        if (!aNotFirstRev) {
+          aProject.dataw.name = 'Untitled';
+          aProject.dataw.blurb = 'blurb';
+        } else {
+          that.pendingRev.map.touch = null;
+        }
+        aSql += "UPDATE projects.project SET dataw = "+(aNotFirstRev ? "NULL" : "'"+JSON.stringify(aProject.dataw)+"'")+" WHERE oid = '"+that.oid+"';\n";
+        aReverted.project = { oid:aProject.oid, data:aNotFirstRev ? aProject.data : aProject.dataw };
+      }
+      for (var aPg in iReq.map.page) {
+        for (var a in iReq.map.page[aPg].part) {
+          delete that.pendingRev.map.page[aPg].part[a];
+          that.pendingRev.map.page.sideline.part[a] = true;
+        }
+        var aLayoutw = null, aDataw = null, aPt = null;
+        if (!iReq.map.page[aPg].op) {
+          for (aPt in that.pendingRev.map.page[aPg].part) break;
+          if (!aPt && that.pendingRev.map.page[aPg].op === '.')
+            delete that.pendingRev.map.page[aPg];
+          aReverted.page[aPg] = null;
+          continue;
+        }
+        for (aPt in that.pendingRev.map.page[aPg].part) {
+          if (that.pendingRev.map.page[aPg].part[aPt].op === '+') { // add unreverted new parts to reverted page
+            for (var a=0; aPage[aPg].layoutw[a].oid !== aPt; ++a) {}
+            aPage[aPg].layout.push(aPage[aPg].layoutw[a]);
+            aLayoutw = aPage[aPg].layout;
+          }
+        }
+        if (that.pendingRev.map.page[aPg].op === '+') {
+          aPage[aPg].dataw.name = 'Untitled';
+          aDataw = aPage[aPg].dataw;
+        }
+        if (!aPt) {
+          if (aNotFirstRev || Object.keys(that.pendingRev.map.page).length > 1) {
+            if (that.pendingRev.map.page[aPg].op !== '+') {
+              delete that.pendingRev.map.page[aPg];
+            } else {
+              that.pendingRev.map.page[aPg].flag = true;
+              continue;
+            }
+          }
+        } else if (!aLayoutw) {
+          that.pendingRev.map.page[aPg].touch = null;
+          that.pendingRev.map.page[aPg].op = '.';
+        }
+        aSql += "UPDATE page SET dataw   = "+(aDataw   ? "'"+JSON.stringify(aDataw)  +"'" : "NULL")+" , \
+                                 layoutw = "+(aLayoutw ? "'"+JSON.stringify(aLayoutw)+"'" : "NULL")+" WHERE oid = '"+aPg+"';\n";
+        aReverted.page[aPg] = { oid:aPage[aPg].oid, data:aDataw ? aPage[aPg].dataw : aPage[aPg].data };
+      }
+      aSql += "UPDATE revision SET oid = '!'||oid, map = '"+JSON.stringify(that.pendingRev.map)+"' WHERE rowid = 1;\n";
+      aSql += "COMMIT TRANSACTION;";
+      that.db.exec(aSql, noOpCallback, function() {
+        that._finishRevision(that.pendingRev.map, null, null, function() {
+          sClients.notify(iReq, [aReverted, that.pendingRev], that.oid);
+        });
+      });
+    });
   };
 
   Project.prototype._makeDiffs = function(iRev, iBufList, iDiffList, iCallback) {
@@ -3288,17 +3397,28 @@ console.log(partlist);
   Project.prototype.commitRevision = { autogen:true };
   Project.prototype.handle_commitRevision = function(iReq, iNoSendCallback) {
     if (!this.pendingRev.map.touch) {
-      for (var any in this.pendingRev.map.page) break;
+      for (var any in this.pendingRev.map.page)
+        if (this.pendingRev.map.page[any].flag) any = null;
+        else break;
       if (!any) {
         console.log('commitRevision found nothing to commit');
         return sClients.respond(iReq, {status:'ok'});
       }
     }
     var that = this;
+    var aDelPage = '', aReverted = {};
+    for (var a in that.pendingRev.map.page) {
+      if (that.pendingRev.map.page[a].flag) {
+        aReverted[a] = 'delete';
+        delete that.pendingRev.map.page[a];
+        aDelPage += (aDelPage ? " OR " : " ") + "oid = '"+a+"'";
+      }
+    }
     var aRev;
     that.db.exec("SAVEPOINT commit_revision; \
                  "+(iNoSendCallback || that.pendingRev.node === sNodeOffset ? "" : kIncrOid+";\n UPDATE revision SET oid = ("+kNewOid+") WHERE rowid = 1;")+" \
-                  INSERT INTO revision SELECT '!'||oid, '"+sUUId+"', node, date, map, parents, NULL FROM revision WHERE rowid = 1; \
+                  INSERT INTO revision SELECT '!'||oid, '"+sUUId+"', node, date, '"+JSON.stringify(that.pendingRev.map)+"', parents, NULL FROM revision WHERE rowid = 1; \
+                 "+(aDelPage && "DELETE FROM page WHERE"+aDelPage+";")+" \
                   SELECT * FROM revision WHERE rowid = last_insert_rowid();", function(err, row) {
       if (err) throw err;
       if (row) aRev = row;
@@ -3339,7 +3459,7 @@ console.log(partlist);
       that.db.exec("UPDATE revision SET oid = ' ', node = NULL, date = NULL, map = NULL, parents = '"+JSON.stringify(that.pendingRev.parents)+"' WHERE rowid = 1;\
                    "+(iNoSendCallback ? "UPDATE revision SET oid = substr(oid, 2) WHERE oid LIKE '!%';" : "")+"\
                     RELEASE commit_revision;", noOpCallback, function() {
-        sClients.notify(null, that.pendingRev, that.oid);
+        sClients.notify(null, aDelPage ? [{type:'reverted', page:aReverted}, that.pendingRev] : that.pendingRev, that.oid);
         if (iNoSendCallback)
           return iNoSendCallback(aRev);
         that._finishRevision(aMap, revdata && aRev, revdata, function() {
@@ -3374,7 +3494,7 @@ console.log(partlist);
           });
         } else {
           fCallback.count = 1;
-          if (iMap.page.sideline) {
+          if (aPg === 'sideline') {
             fs.unlink(aPath+'.w', fCallback);
             ++fCallback.count;
           }
